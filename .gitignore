@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志
+logs/
+
+# 数据库文件
+*.db
+*.db.lock
+*.db.process
+
+# IDE
+.vscode/
+.idea/
+
+# 下载目录
+douyin/
