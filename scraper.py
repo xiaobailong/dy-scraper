@@ -50,7 +50,7 @@ async def main():
     if url_source == "youdao":
         url_list = fetch_urls_from_youdao()
     else:
-        local_file = getattr(config, "LOCAL_URL_FILE", r"D:\BaiduNetdiskDownload\临时文件.txt")
+        local_file = config.LOCAL_URL_FILE
         url_list = fetch_urls_from_local_file(str(local_file))
     if not url_list:
         log("未获取到任何 URL，退出")
