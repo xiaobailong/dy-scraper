@@ -16,6 +16,7 @@ _TYPE_CONVERTERS = {
     "MIN_FILE_SIZE": int,
     "MAX_FILE_SIZE": int,
     "UI_ASSET_DOMAINS": lambda v: set(json.loads(v)),
+    "LOCAL_URL_FILE": Path,
 }
 
 _loaded = False

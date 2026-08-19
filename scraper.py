@@ -23,6 +23,7 @@ from common.logger import log
 import core.metadata as metadata
 from common.utils import clean_title, is_ui_asset, normalize_url, scan_existing_md5s
 from data.youdao import fetch_urls_from_youdao
+from data.local_file import fetch_urls_from_local_file
 
 try:
     from playwright.async_api import async_playwright
@@ -45,7 +46,12 @@ async def main():
         log("  检测到另一个爬虫正在运行，退出（避免重复下载）")
         return
 
-    url_list = fetch_urls_from_youdao()
+    url_source = getattr(config, "URL_SOURCE", "file")
+    if url_source == "youdao":
+        url_list = fetch_urls_from_youdao()
+    else:
+        local_file = getattr(config, "LOCAL_URL_FILE", r"D:\BaiduNetdiskDownload\临时文件.txt")
+        url_list = fetch_urls_from_local_file(str(local_file))
     if not url_list:
         log("未获取到任何 URL，退出")
         _process_lock.release()
