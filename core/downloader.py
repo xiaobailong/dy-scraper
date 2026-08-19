@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import os
 import re
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +13,7 @@ from urllib.request import Request, urlopen
 
 from config import MAX_FILE_SIZE, MIN_FILE_SIZE
 from common.logger import log
-from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_rename, safe_unlink
+from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink
 
 
 def _locked_write(file_path: str, data: bytes) -> None:
@@ -83,7 +82,7 @@ async def download_files(
     max_workers: int = 5,
     md5_registry: set[str] | None = None,
 ) -> list[dict]:
-    """异步下载多个文件，文件命名为 {author}_{title}_{时间}_{md5}.{ext}，通过 MD5 去重"""
+    """异步下载多个文件，文件命名为 {author}_{title}_{时间}_{idx}.{ext}，通过 MD5 去重，直接下载到最终路径"""
     if not urls:
         return []
 
@@ -121,24 +120,20 @@ async def download_files(
                     })
                     continue
 
-            temp_name = f"_tmp_{i}_{int(time.time() * 1000)}{ext}"
-            temp_path = save_dir / temp_name
+            prefix = f"{safe_author}_" if safe_author else ""
+            final_name = f"{prefix}{safe_title}_{download_time}_{i}{ext}"
+            final_path = save_dir / final_name
 
             log(f"  [{i + 1}/{len(urls)}] 下载中: {url[:80]}...")
-            task = loop.run_in_executor(pool, download_file_sync, url, temp_path, referer)
-            tasks.append((i, url, ext, temp_path, task))
+            task = loop.run_in_executor(pool, download_file_sync, url, final_path, referer)
+            tasks.append((i, url, final_name, final_path, task))
 
-        for i, url, ext, temp_path, task in tasks:
+        for i, url, final_name, final_path, task in tasks:
             success, info, md5 = await task
             if success:
-                md5_short = md5[:8]
-                prefix = f"{safe_author}_" if safe_author else ""
-                final_name = f"{prefix}{safe_title}_{download_time}_{md5_short}{ext}"
-                final_path = save_dir / final_name
-
-                actual_size = temp_path.stat().st_size
+                actual_size = final_path.stat().st_size
                 if actual_size < MIN_FILE_SIZE:
-                    safe_unlink(temp_path)
+                    safe_unlink(final_path)
                     log(f"  [{i + 1}/{len(urls)}] 删除 (实际小于30KB): {final_name} ({format_bytes(actual_size)})")
                     results.append({
                         "name": final_name, "url": url, "path": "", "size": format_bytes(actual_size),
@@ -147,7 +142,7 @@ async def download_files(
                     continue
 
                 if md5 in md5_registry:
-                    safe_unlink(temp_path)
+                    safe_unlink(final_path)
                     log(f"  [{i + 1}/{len(urls)}] 跳过 (MD5重复): {final_name} ({info})")
                     results.append({
                         "name": final_name, "url": url, "path": "", "size": info,
@@ -157,18 +152,14 @@ async def download_files(
 
                 md5_registry.add(md5)
 
-                if final_path.exists():
-                    safe_unlink(final_path)
-                safe_rename(temp_path, final_path)
-
                 log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})")
                 results.append({
                     "name": final_name, "url": url, "path": str(final_path),
                     "size": info, "md5": md5, "status": "downloaded"
                 })
             else:
-                if temp_path.exists():
-                    safe_unlink(temp_path)
+                if final_path.exists():
+                    safe_unlink(final_path)
                 log(f"  [{i + 1}/{len(urls)}] 失败: {info}")
                 results.append({
                     "name": "", "url": url, "path": "", "size": None,
