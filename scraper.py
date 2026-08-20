@@ -46,7 +46,7 @@ async def main():
         log("  检测到另一个爬虫正在运行，退出（避免重复下载）")
         return
 
-    url_source = getattr(config, "URL_SOURCE", "file")
+    url_source = getattr(config, "URL_SOURCE", "youdao")
     if url_source == "youdao":
         url_list = fetch_urls_from_youdao()
     else:
