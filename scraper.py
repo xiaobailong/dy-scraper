@@ -50,8 +50,12 @@ async def main():
     if url_source == "youdao":
         url_list = fetch_urls_from_youdao()
     else:
-        local_file = config.LOCAL_URL_FILE
-        url_list = fetch_urls_from_local_file(str(local_file))
+        default_local_file = Path(__file__).parent / "data" / "tmp.txt"
+        if default_local_file.exists():
+            url_list = fetch_urls_from_local_file(str(default_local_file))
+        else:
+            local_file = config.LOCAL_URL_FILE
+            url_list = fetch_urls_from_local_file(str(local_file))
     if not url_list:
         log("未获取到任何 URL，退出")
         _process_lock.release()
