@@ -339,9 +339,10 @@ async () => {
                                 break;
                             }
                         }
-                    }
                     if (result.authorCode && !result.extractSource) result.extractSource = 'render_data_regex';
+                    }
                 } catch(e) {}
+                }
             }
         }
     }
