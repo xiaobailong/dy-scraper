@@ -140,22 +140,38 @@ async def main():
         }
         urls_with_downloads = 0
 
+        _last_final_url = None
         for url_idx, TARGET_URL in enumerate(url_list, 1):
-            collected_requests.clear()
-            detail_responses.clear()
+            # 使用索引切片代替 clear()，避免上一页面 pending 的响应在 goto() 期间混入
+            _req_start = len(collected_requests)
+            _detail_start = len(detail_responses)
             log(f"\n{'=' * 60}")
             log(f"  [{url_idx}/{len(url_list)}] {TARGET_URL}")
             log(f"{'=' * 60}")
 
             log("[2/6] 访问目标页面...")
+            goto_ok = True
             try:
                 await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 log(f"  页面加载超时或出错: {e}")
-                log("  尝试继续提取已加载的内容...")
+                goto_ok = False
 
             final_url = page.url
             log(f"  最终跳转地址: {final_url}")
+
+            if not goto_ok:
+                log(f"  ⚠️ 页面加载失败（状态不确定，可能混用新旧页面内容），跳过当前 URL")
+                continue
+
+            if final_url == _last_final_url:
+                log(f"  ⚠️ 跳转前后地址相同，可能未成功进入新页面，跳过")
+                continue
+            _last_final_url = final_url
+
+            if any(s in final_url for s in ("/notfound", "/404", "/about:blank", "/error")):
+                log(f"  ⚠️ 目标页面不存在（{final_url}），跳过")
+                continue
 
             log("[3/6] 等待页面内容渲染...")
             try:
@@ -167,9 +183,12 @@ async def main():
 
             log("[4/6] 提取页面数据...")
 
-            page_data = await metadata.extract_metadata(page, detail_responses)
+            # 只取 goto() 开始后新增的响应，防止上一页面的 pending 响应混入
+            _new_detail = detail_responses[_detail_start:]
+            page_data = await metadata.extract_metadata(page, _new_detail)
 
-            network_video_urls, network_image_urls = extract_urls_from_network(collected_requests)
+            _new_requests = collected_requests[_req_start:]
+            network_video_urls, network_image_urls = extract_urls_from_network(_new_requests)
 
             api_videos = page_data.get("apiVideoUrls") or []
             api_images = page_data.get("apiImageUrls") or []

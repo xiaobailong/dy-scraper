@@ -42,6 +42,54 @@ async () => {
         extractSource: '',  // 记录提取来源，便于调试
     };
 
+    // ========================================================
+    // 工具: 从当前页面 URL 提取 aweme_id / note_id 用于 SSR 校验
+    // 防止 SPA 软跳转时，旧页面的 SSR 变量未被清除造成"串数据"
+    // ========================================================
+    const _currentPageUrl = window.location.href || '';
+    // 从 URL 中提取可能的 aweme id: /video/73955... /note/73955...
+    function _extractIdsFromUrl(url) {
+        const ids = new Set();
+        (url || '').replace(/[\/\?#\.=-](\d{15,22})[\/\?#\.=&-]/g, (_, id) => { ids.add(id); return _; });
+        // 末尾数字
+        const m = (url || '').match(/(\d{15,22})(?:\?|#|$)/);
+        if (m) ids.add(m[1]);
+        // 路径段中的数字
+        const segs = (url || '').split('/');
+        for (const s of segs) {
+            const mm = s.match(/^(\d{15,22})$/);
+            if (mm) ids.add(mm[1]);
+        }
+        return ids;
+    }
+    const _pageIds = _extractIdsFromUrl(_currentPageUrl);
+    // 从 aweme_detail / note_detail 对象中找到它的 aweme_id
+    function _findDetailId(detail) {
+        if (!detail || typeof detail !== 'object') return '';
+        for (const k of ['aweme_id', 'note_id', 'item_id', 'id', 'awemeId', 'noteId']) {
+            const v = detail[k];
+            if (typeof v === 'string' && v) return v;
+            if (typeof v === 'number' && v > 0) return String(v);
+        }
+        return '';
+    }
+    // 校验 SSR 详情对象是否属于当前页面
+    function _detailBelongsToCurrentPage(detail) {
+        if (!_pageIds.size) return true;  // 无法从 URL 提取 id 时保守放行
+        const did = _findDetailId(detail);
+        if (!did) return true;
+        return _pageIds.has(did);
+    }
+    // 从 SSR 根对象中找出 aweme_detail / note_detail，并校验归属
+    function _findValidDetail(root) {
+        if (!root || typeof root !== 'object') return null;
+        for (const k of ['aweme_detail', 'note_detail', 'aweme', 'note', 'itemDetail', 'item_detail']) {
+            const d = root[k];
+            if (d && typeof d === 'object' && _detailBelongsToCurrentPage(d)) return d;
+        }
+        return null;
+    }
+
     // ========================================
     // 策略1: 深度遍历 SSR 数据
     // ========================================
@@ -135,6 +183,26 @@ async () => {
                 const data = typeof window[key] === 'string'
                     ? JSON.parse(window[key])
                     : window[key];
+                // === SSR 归属校验: 若 data 中存在 aweme_detail/note_detail 但不属于当前页面，跳过整个 SSR key ===
+                const validDetail = _findValidDetail(data);
+                // 如果找到了 aweme_detail/note_detail 但没有一个归属当前页面 -> SSR 是旧页面残留的
+                let hasAnyDetail = false;
+                try {
+                    const _walk = (o) => {
+                        if (!o || typeof o !== 'object') return;
+                        if (Array.isArray(o)) { for (const x of o) _walk(x); return; }
+                        for (const k of Object.keys(o)) {
+                            if (['aweme_detail','note_detail','aweme','note'].includes(k) && o[k] && typeof o[k]==='object') { hasAnyDetail = true; return; }
+                            _walk(o[k]);
+                            if (hasAnyDetail) return;
+                        }
+                    };
+                    _walk(data);
+                } catch(e) {}
+                if (hasAnyDetail && !validDetail) {
+                    // console.debug('[SSR跳过] key=' + key + ' 的详情对象不属于当前URL, 判定为旧页面残留');
+                    continue;
+                }
                 const found = deepFind(data);
                 if (found) {
                     if (found.nickname) result.author = found.nickname;
@@ -163,6 +231,21 @@ async () => {
                     const data = typeof window[key] === 'string'
                         ? JSON.parse(window[key])
                         : window[key];
+                    // SSR 归属校验（同策略1）
+                    let validDetail = _findValidDetail(data);
+                    let hasAnyDetail = false;
+                    try {
+                        (function _walk(o) {
+                            if (!o || typeof o !== 'object') return;
+                            if (Array.isArray(o)) { for (const x of o) _walk(x); return; }
+                            for (const k of Object.keys(o)) {
+                                if (['aweme_detail','note_detail','aweme','note'].includes(k) && o[k] && typeof o[k]==='object') { hasAnyDetail = true; return; }
+                                _walk(o[k]); if (hasAnyDetail) return;
+                            }
+                        })(data);
+                    } catch(e) {}
+                    if (hasAnyDetail && !validDetail) continue;
+
                     const jsonStr = JSON.stringify(data);
                     const nickMatch = jsonStr.match(/"nickname"\s*:\s*"([^"]+)"/);
                     if (nickMatch) result.author = nickMatch[1];
@@ -212,27 +295,43 @@ async () => {
             renderData = window.RENDER_DATA;
         }
         if (renderData) {
-            // 先用深度遍历
-            const found = deepFind(renderData);
-            if (found) {
-                if (found.nickname && !result.author) result.author = found.nickname;
-                if (found.unique_id && !result.authorCode) result.authorCode = found.unique_id;
-                else if (found.short_id && !result.authorCode) result.authorCode = found.short_id;
-                if (found.sec_uid && (!result.secUid || result.secUid === 'self')) result.secUid = found.sec_uid;
-                if (result.author) result.extractSource = 'render_data_deep';
-            }
-            // 深度遍历没找到，用正则兜底（含变体字段名）
-            if (!result.authorCode) {
-                try {
-                    const jsonStr = JSON.stringify(renderData);
-                    const uidMatch = jsonStr.match(/"unique_id"\s*:\s*"([^"]+)"/);
-                    if (uidMatch) result.authorCode = uidMatch[1];
-                    if (!result.authorCode) {
-                        const sidMatch = jsonStr.match(/"short_id"\s*:\s*"([^"]+)"|"short_id"\s*:\s*(\d+)/);
-                        if (sidMatch) result.authorCode = sidMatch[1] || sidMatch[2];
+            // SSR 归属校验
+            const validDetail = _findValidDetail(renderData);
+            let hasAnyDetail = false;
+            try {
+                (function _walk(o) {
+                    if (!o || typeof o !== 'object') return;
+                    if (Array.isArray(o)) { for (const x of o) _walk(x); return; }
+                    for (const k of Object.keys(o)) {
+                        if (['aweme_detail','note_detail','aweme','note'].includes(k) && o[k] && typeof o[k]==='object') { hasAnyDetail = true; return; }
+                        _walk(o[k]); if (hasAnyDetail) return;
                     }
-                    if (!result.authorCode) {
-                        for (const ck of ['uid', 'author_uid', 'user_id', 'douyin_id', 'account_id']) {
+                })(renderData);
+            } catch(e) {}
+            if (hasAnyDetail && !validDetail) {
+                // 旧页面残留 RENDER_DATA，不使用策略2
+            } else {
+                // 先用深度遍历
+                const found = deepFind(renderData);
+                if (found) {
+                    if (found.nickname && !result.author) result.author = found.nickname;
+                    if (found.unique_id && !result.authorCode) result.authorCode = found.unique_id;
+                    else if (found.short_id && !result.authorCode) result.authorCode = found.short_id;
+                    if (found.sec_uid && (!result.secUid || result.secUid === 'self')) result.secUid = found.sec_uid;
+                    if (result.author) result.extractSource = 'render_data_deep';
+                }
+                // 深度遍历没找到，用正则兜底（含变体字段名）
+                if (!result.authorCode) {
+                    try {
+                        const jsonStr = JSON.stringify(renderData);
+                        const uidMatch = jsonStr.match(/"unique_id"\s*:\s*"([^"]+)"/);
+                        if (uidMatch) result.authorCode = uidMatch[1];
+                        if (!result.authorCode) {
+                            const sidMatch = jsonStr.match(/"short_id"\s*:\s*"([^"]+)"|"short_id"\s*:\s*(\d+)/);
+                            if (sidMatch) result.authorCode = sidMatch[1] || sidMatch[2];
+                        }
+                        if (!result.authorCode) {
+                            for (const ck of ['uid', 'author_uid', 'user_id', 'douyin_id', 'account_id']) {
                             const re = new RegExp('"' + ck + '"\\s*:\\s*"([^"]+)"');
                             const m = jsonStr.match(re);
                             if (m && m[1] && m[1] !== '0') {
@@ -445,9 +544,11 @@ async () => {
 # （笔记页没有 API 响应，图片数据全在 RENDER_DATA 等 SSR 变量中）
 # ============================================================
 
-async def extract_images_from_ssr(page) -> list[str]:
+async def extract_images_from_ssr(page, page_url: str = "") -> list[str]:
     """笔记页没有 API 响应，图片数据全在 RENDER_DATA 等 SSR 变量中。
-    优先通过 JSON 解析提取，正则兜底。"""
+    优先通过 JSON 解析提取，正则兜底。
+    page_url: 当前页面URL，用于校验 SSR 中的详情对象归属（防止 SPA 软跳转时 SSR 残留旧页面）
+    """
     try:
         ssr_json = await page.evaluate("""
             () => {
@@ -476,11 +577,12 @@ async def extract_images_from_ssr(page) -> list[str]:
 
         # 方法1: JSON 结构解析 — 从 note detail 中提取 images
         if isinstance(data, dict):
-            urls = _extract_images_from_ssr_dict(data)
+            urls = _extract_images_from_ssr_dict(data, page_url)
             if urls:
                 return urls
 
         # 方法2: 正则兜底 — 在原始 JSON 字符串中搜索 douyinpic.com 图片链接
+        # 注意：正则兜底无法做归属校验，可能混入旧内容，但仅在方法1无结果时启用
         urls = set()
         for m in re.finditer(r'"https?://[^"\s]*?douyinpic\.com[^"\s]*?"', ssr_json):
             u = m.group(0)[1:-1]
@@ -491,33 +593,36 @@ async def extract_images_from_ssr(page) -> list[str]:
         return []
 
 
-def _extract_images_from_ssr_dict(data: dict) -> list[str]:
-    """从 SSR JSON 对象中提取图片 URL，遍历常见路径"""
+def _extract_images_from_ssr_dict(data: dict, page_url: str = "") -> list[str]:
+    """从 SSR JSON 对象中提取图片 URL，遍历常见路径。
+    若 aweme_detail/note_detail 存在则做归属校验，不属于当前页面的会被跳过。"""
     urls = set()
 
     # 路径1: note_detail.images (笔记页)
     note = data.get("note_detail") or data.get("note")
     if isinstance(note, dict):
-        images = note.get("images") or []
-        for img in images if isinstance(images, list) else []:
-            if isinstance(img, dict):
-                for key in ("download_url_list", "url_list"):
-                    for u in (img.get(key) or []):
-                        if isinstance(u, str) and u.startswith("http"):
-                            urls.add(u)
+        if _detail_belongs_to_current_page(note, page_url):
+            images = note.get("images") or []
+            for img in images if isinstance(images, list) else []:
+                if isinstance(img, dict):
+                    for key in ("download_url_list", "url_list"):
+                        for u in (img.get(key) or []):
+                            if isinstance(u, str) and u.startswith("http"):
+                                urls.add(u)
 
     # 路径2: aweme_detail.images (视频图文)
     aweme = data.get("aweme_detail") or data.get("aweme")
     if isinstance(aweme, dict):
-        images = aweme.get("images") or []
-        for img in images if isinstance(images, list) else []:
-            if isinstance(img, dict):
-                for key in ("download_url_list", "url_list"):
-                    for u in (img.get(key) or []):
-                        if isinstance(u, str) and u.startswith("http"):
-                            urls.add(u)
+        if _detail_belongs_to_current_page(aweme, page_url):
+            images = aweme.get("images") or []
+            for img in images if isinstance(images, list) else []:
+                if isinstance(img, dict):
+                    for key in ("download_url_list", "url_list"):
+                        for u in (img.get(key) or []):
+                            if isinstance(u, str) and u.startswith("http"):
+                                urls.add(u)
 
-    # 路径3: 递归查找所有包含 images 数组的对象
+    # 路径3: 递归查找所有包含 images 数组的对象（不带归属校验，仅在前两条路径未找到时使用）
     if not urls:
         urls.update(_deep_find_images(data))
 
@@ -550,12 +655,48 @@ def _deep_find_images(obj, depth=0) -> set:
 # Python 端: 从 detail API 响应中提取媒体 URL（视频 + 图片）
 # ============================================================
 
-async def extract_media_from_api_responses(detail_responses: list) -> tuple[list[str], list[str]]:
+def _extract_ids_from_url(url: str) -> set[str]:
+    """从 URL 中提取可能的 aweme/note id（15-22 位数字），用于交叉校验"""
+    ids: set[str] = set()
+    if not url:
+        return ids
+    for m in re.finditer(r'(?:^|[^0-9])(\d{15,22})(?:[^0-9]|$)', url):
+        ids.add(m.group(1))
+    return ids
+
+
+def _extract_detail_id(detail: dict) -> str:
+    """从 aweme_detail / note_detail 对象中提取 aweme_id/note_id"""
+    if not isinstance(detail, dict):
+        return ""
+    for key in ("aweme_id", "note_id", "item_id", "id"):
+        v = detail.get(key)
+        if isinstance(v, str) and v:
+            return v
+        if isinstance(v, int) and v > 0:
+            return str(v)
+    return ""
+
+
+def _detail_belongs_to_current_page(detail: dict, page_url: str) -> bool:
+    """校验详情对象的 id 是否在当前页面 URL 中出现"""
+    page_ids = _extract_ids_from_url(page_url)
+    if not page_ids:
+        return True
+    did = _extract_detail_id(detail)
+    if not did:
+        return True
+    return did in page_ids
+
+
+async def extract_media_from_api_responses(detail_responses: list, page_url: str = "") -> tuple[list[str], list[str]]:
     """
     从 detail API 响应中提取高质量视频和图片 URL。
     支持 aweme_detail (视频) 和 note_detail (笔记) 两种结构。
     优先级: bit_rate 高码率 > download_addr > play_addr
     返回: (video_urls: 已按质量排序, image_urls: 已按分辨率排序)
+
+    page_url: 当前页面 URL，用于校验响应是否属于当前页面（防止上一页面 pending 回调混入）
     """
     all_video_urls: list[tuple[str, int]] = []  # (url, quality_score)
     all_image_urls: list[tuple[str, int]] = []  # (url, quality_score)
@@ -576,14 +717,18 @@ async def extract_media_from_api_responses(detail_responses: list) -> tuple[list
             detail = data.get(detail_key)
             if not isinstance(detail, dict):
                 continue
-
+            # ==== 归属校验：若响应中的 aweme_id 不在当前页面URL，说明是上一页面的响应，丢弃 ====
+            if not _detail_belongs_to_current_page(detail, page_url):
+                log(f"  [API归属校验] 丢弃 {detail_key} 响应 (id={_extract_detail_id(detail)[:20]} 不在当前URL)", "debug")
+                continue
             _extract_video_from_detail(detail, all_video_urls)
             _extract_images_from_detail(detail, all_image_urls)
 
         # 兜底：直接在顶层 data 中查找（兼容旧结构）
         if isinstance(data, dict) and not all_video_urls and not all_image_urls:
-            _extract_video_from_detail(data, all_video_urls)
-            _extract_images_from_detail(data, all_image_urls)
+            if _detail_belongs_to_current_page(data, page_url):
+                _extract_video_from_detail(data, all_video_urls)
+                _extract_images_from_detail(data, all_image_urls)
 
     # 按质量分数降序排序，去重保持顺序
     seen_v = set()
@@ -704,15 +849,20 @@ async def extract_from_api_responses(detail_responses: list, page_data: dict) ->
     if not detail_responses:
         return page_data
 
+    page_url = page_data.get("pageUrl") or ""
     author_found = bool(page_data.get("author"))
     code_found = bool(page_data.get("authorCode"))
 
-    # DOM 提取的 authorCode 可能不准确（如笔记页侧边栏混入登录用户的 code），
-    # 如果 extractSource 是 DOM 来源，则强制用 API 响应覆盖
+    # DOM 提取的 author/authorCode 可能不准确（如侧边栏混入登录用户，或上一页面残留值），
+    # 如果 extractSource 是不可靠来源，则强制用 API 响应覆盖
     extract_source = page_data.get("extractSource", "")
-    if code_found and extract_source in _UNRELIABLE_SOURCES:
-        log(f"  [API调试] extractSource={extract_source} 不可靠，强制用API覆盖", "debug")
+    _force_override = extract_source in _UNRELIABLE_SOURCES
+    if code_found and _force_override:
+        log(f"  [API调试] extractSource={extract_source} 不可靠，强制用API覆盖authorCode", "debug")
         code_found = False
+    if author_found and _force_override:
+        log(f"  [API调试] extractSource={extract_source} 不可靠，强制用API覆盖author", "debug")
+        author_found = False
 
     for resp in detail_responses:
         try:
@@ -724,30 +874,50 @@ async def extract_from_api_responses(detail_responses: list, page_data: dict) ->
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
-            # 回退到正则
-            if not author_found:
-                m = re.search(r'"nickname"\s*:\s*"([^"]+)"', body)
-                if m:
-                    page_data["author"] = m.group(1)
-                    author_found = True
-                    if not page_data.get("extractSource"):
-                        page_data["extractSource"] = "api:detail_regex"
-            if not code_found:
-                m = re.search(r'"unique_id"\s*:\s*"([^"]+)"', body)
-                if m:
-                    page_data["authorCode"] = m.group(1)
-                    code_found = True
-                    if not page_data.get("extractSource"):
-                        page_data["extractSource"] = "api:detail_regex"
-                else:
-                    m = re.search(r'"short_id"\s*:\s*"([^"]+)"|"short_id"\s*:\s*(\d+)', body)
+            # 回退到正则（正则无法做归属校验，所以仅在当前请求URL本身含当前页ID时才使用）
+            _resp_url_ok = True
+            if page_url:
+                _pid = _extract_ids_from_url(page_url)
+                _rid = _extract_ids_from_url(resp.url)
+                # 如果请求URL本身含有当前页ID，才信任这个响应
+                if _pid and _rid and _pid.isdisjoint(_rid):
+                    _resp_url_ok = False
+            if _resp_url_ok:
+                if not author_found:
+                    m = re.search(r'"nickname"\s*:\s*"([^"]+)"', body)
                     if m:
-                        page_data["authorCode"] = m.group(1) or m.group(2)
+                        page_data["author"] = m.group(1)
+                        author_found = True
+                        if not page_data.get("extractSource"):
+                            page_data["extractSource"] = "api:detail_regex"
+                if not code_found:
+                    m = re.search(r'"unique_id"\s*:\s*"([^"]+)"', body)
+                    if m:
+                        page_data["authorCode"] = m.group(1)
                         code_found = True
                         if not page_data.get("extractSource"):
                             page_data["extractSource"] = "api:detail_regex"
+                    else:
+                        m = re.search(r'"short_id"\s*:\s*"([^"]+)"|"short_id"\s*:\s*(\d+)', body)
+                        if m:
+                            page_data["authorCode"] = m.group(1) or m.group(2)
+                            code_found = True
+                            if not page_data.get("extractSource"):
+                                page_data["extractSource"] = "api:detail_regex"
             if author_found and code_found:
                 break
+            continue
+
+        # JSON 解析成功：先定位到 detail 对象，做归属校验，再取 author
+        _detail_obj = None
+        for _dk in ("aweme_detail", "note_detail"):
+            _d = data.get(_dk)
+            if isinstance(_d, dict):
+                _detail_obj = _d
+                break
+        if _detail_obj and page_url and not _detail_belongs_to_current_page(_detail_obj, page_url):
+            # 这个响应不属于当前页面（上一页面 pending 回调），跳过
+            log(f"  [API归属校验] 作者信息丢弃（aweme_id={_extract_detail_id(_detail_obj)[:20]} 不在当前URL）", "debug")
             continue
 
         # JSON 解析成功：先定位到 author 对象，再从中提取，避免混入其他用户的 short_id
@@ -930,23 +1100,33 @@ async def extract_metadata(page, detail_responses: list) -> dict:
     # 用 Playwright 调用用户信息 API 获取准确值
     extract_source = page_data.get("extractSource", "")
     code_from_dom = extract_source in _UNRELIABLE_SOURCES
+    author_from_dom = code_from_dom  # 同样，author 名字也可能不准
     needs_api_code = (not page_data.get("authorCode")) or code_from_dom
-    if needs_api_code and page_data.get("secUid") and page_data["secUid"] != "self":
+    needs_api_author = (not page_data.get("author")) or author_from_dom
+    if (needs_api_code or needs_api_author) and page_data.get("secUid") and page_data["secUid"] != "self":
         log(f"  [策略6] 尝试通过sec_uid={page_data['secUid'][:30]}... 调用用户API "
-            f"(extractSource={extract_source}, authorCode={page_data.get('authorCode','') or '(空)'})", "debug")
-        code = await _fetch_user_code_by_secuid(page, page_data["secUid"])
-        log(f"  [策略6] 返回: {code or '(空)'}", "debug")
-        if code:
-            page_data["authorCode"] = code
-            page_data["extractSource"] = "api:user_profile_py"
+            f"(extractSource={extract_source}, authorCode={page_data.get('authorCode','') or '(空)'}, "
+            f"author={page_data.get('author','') or '(空)'})", "debug")
+        info = await _fetch_user_info_by_secuid(page, page_data["secUid"])
+        if info:
+            if info.get("code") and (needs_api_code or not page_data.get("authorCode")):
+                page_data["authorCode"] = info["code"]
+                if not page_data.get("extractSource") or code_from_dom:
+                    page_data["extractSource"] = "api:user_profile_py"
+            if info.get("nickname") and (needs_api_author or not page_data.get("author")):
+                page_data["author"] = info["nickname"]
+                if not page_data.get("extractSource") or author_from_dom:
+                    page_data["extractSource"] = "api:user_profile_py"
 
-    api_videos, api_images = await extract_media_from_api_responses(detail_responses)
+    current_page_url = page_data.get("pageUrl") or ""
+
+    api_videos, api_images = await extract_media_from_api_responses(detail_responses, current_page_url)
     page_data["apiVideoUrls"] = api_videos
     page_data["apiImageUrls"] = api_images
 
     # 笔记页兜底: API 无图片时，从页面 SSR 数据提取（优先于 DOM+网络请求）
     if not api_images:
-        ssr_images = await extract_images_from_ssr(page)
+        ssr_images = await extract_images_from_ssr(page, current_page_url)
         if ssr_images:
             page_data["apiImageUrls"] = ssr_images
             log(f"  SSR兜底提取到 {len(ssr_images)} 个图片链接", "debug")
@@ -957,8 +1137,9 @@ async def extract_metadata(page, detail_responses: list) -> dict:
     return page_data
 
 
-async def _fetch_user_code_by_secuid(page, sec_uid: str) -> str:
-    """Python 端兜底：通过 sec_uid 调用用户信息 API 获取抖音号"""
+async def _fetch_user_info_by_secuid(page, sec_uid: str) -> dict | None:
+    """Python 端兜底：通过 sec_uid 调用用户信息 API 获取抖音号和昵称。
+    返回: {"code": "...", "nickname": "..."} 或 None"""
     try:
         result = await page.evaluate("""
             async (secUid) => {
@@ -995,21 +1176,22 @@ async def _fetch_user_code_by_secuid(page, sec_uid: str) -> str:
             }
         """, sec_uid)
         if not result:
-            return ""
+            return None
         try:
             info = json.loads(result)
             if isinstance(info, dict):
                 if info.get("error"):
                     log(f"  [策略6详情] 错误: {info['error']}", "debug")
-                    return ""
+                    return None
                 code = info.get("unique_id") or info.get("short_id") or ""
+                nickname = info.get("nickname") or ""
                 log(f"  [策略6详情] unique_id={info.get('unique_id','')[:30]}, "
                     f"short_id={info.get('short_id','')[:30]}, "
-                    f"nickname={info.get('nickname','')[:30]}", "debug")
-                return code
+                    f"nickname={nickname[:30]}", "debug")
+                return {"code": code, "nickname": nickname}
         except json.JSONDecodeError:
             pass
-        return (result or "").strip()
+        return None
     except Exception as e:
         log(f"  [策略6详情] 异常: {e}", "debug")
-        return ""
+        return None
