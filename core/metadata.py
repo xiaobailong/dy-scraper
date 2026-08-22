@@ -947,9 +947,9 @@ async def extract_from_api_responses(detail_responses: list, page_data: dict) ->
                     elif isinstance(sid, str) and sid and sid != "0":
                         page_data["authorCode"] = sid
                         code_found = True
-            if not page_data.get("secUid") and author_obj.get("sec_uid"):
+            if author_obj.get("sec_uid"):
                 page_data["secUid"] = author_obj["sec_uid"]
-            if (author_found or code_found) and not page_data.get("extractSource"):
+            if author_found or code_found:
                 page_data["extractSource"] = "api:detail_author_obj"
 
         # 如果 author 对象中没找到 code，再在 author 对象内深度遍历
@@ -966,9 +966,9 @@ async def extract_from_api_responses(detail_responses: list, page_data: dict) ->
                     elif found.get("short_id"):
                         page_data["authorCode"] = found["short_id"]
                         code_found = True
-                if not page_data.get("secUid") and found.get("sec_uid"):
+                if found.get("sec_uid"):
                     page_data["secUid"] = found["sec_uid"]
-                if (author_found or code_found) and not page_data.get("extractSource"):
+                if author_found or code_found:
                     page_data["extractSource"] = "api:detail_author_deep"
 
         if author_found and code_found:
