@@ -1,37 +1,15 @@
-# -*- coding: utf-8 -*-
-"""
-抖音网页内容抓取工具 (Playwright 版本)
-获取: 页面标题、作者、图片下载地址、视频下载地址、文件大小
-并下载图片和视频到本地
-"""
-
-import asyncio
-import hashlib
-import json
-from datetime import datetime
-from pathlib import Path
-
-from config import (
-    CHROME_PATH,
-    DOWNLOAD_IMAGE_DIR,
-    DOWNLOAD_VIDEO_DIR,
-    RESULT_DIR,
-)
-from data.db_utils import DBUtils, FileLock
-from core.downloader import deduplicate_videos, download_files, extract_urls_from_network, sort_images_by_quality
-from common.logger import log
-import core.metadata as metadata
-from common.utils import clean_title, is_ui_asset, normalize_url, scan_existing_md5s
-from data.youdao import fetch_urls_from_youdao
-from data.local_file import fetch_urls_from_local_file
-
-try:
-    from playwright.async_api import async_playwright
-except ImportError:
-    raise SystemExit("请先安装 playwright: pip install playwright")
-
-
 async def main():
+    """主函数：协调整个抓取流程。
+
+    流程概览：
+    1. 获取 URL 列表（有道云/本地文件）
+    2. 过滤已处理的 URL（查数据库去重）
+    3. 扫描已有文件 MD5 用于下载去重
+    4. 启动 Playwright 无头浏览器
+    5. 逐个访问 URL，提取页面数据（标题、作者、视频/图片链接）
+    6. 并发下载视频和图片文件
+    7. 保存结果 JSON 并输出分类统计信息
+    """
     log("=" * 60)
     log("  抖音网页内容抓取工具 (Playwright)")
     log("=" * 60)
@@ -39,13 +17,16 @@ async def main():
     import config
     config.reload_config()
 
-    # 进程锁：防止多个爬虫实例同时运行（MD5 注册表不共享会导致重复下载）
+    # ── 进程锁：防止多个爬虫实例同时运行 ──
+    # MD5 注册表不共享，多实例会导致重复下载
     from config import DB_FILE
     _process_lock = FileLock(DB_FILE + ".process", timeout=0.5)
     if not _process_lock.acquire():
         log("  检测到另一个爬虫正在运行，退出（避免重复下载）")
         return
 
+    # ── 步骤1：获取 URL 列表 ──
+    # 根据配置选择来源：有道云笔记 或 本地文件
     url_source = getattr(config, "URL_SOURCE", "youdao")
     if url_source == "youdao":
         url_list = fetch_urls_from_youdao()
@@ -61,6 +42,8 @@ async def main():
         _process_lock.release()
         return
 
+    # ── 步骤2：过滤已处理的 URL ──
+    # 查询数据库，跳过已抓取过的 URL
     db = DBUtils()
     new_urls = []
     skipped_count = 0
@@ -82,21 +65,25 @@ async def main():
 
     log(f"\n共 {len(url_list)} 个 URL 待处理\n")
 
+    # 确保下载目录存在
     DOWNLOAD_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOAD_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # ── 步骤3：扫描已有文件 MD5 注册表 ──
+    # 用于下载时跳过内容完全相同的文件
     log("\n[0/6] 扫描已有文件 MD5，用于去重...")
     md5_registry = scan_existing_md5s(DOWNLOAD_VIDEO_DIR) | scan_existing_md5s(DOWNLOAD_IMAGE_DIR)
     log(f"  已有 {len(md5_registry)} 个文件，将跳过重复下载")
 
+    # ── 步骤4：启动 Playwright 无头浏览器 ──
     log("\n[1/6] 启动浏览器...")
     async with async_playwright() as p:
         launch_kwargs = {
-            "headless": True,
+            "headless": True,  # 无头模式，不显示浏览器窗口
             "args": [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
+                "--disable-blink-features=AutomationControlled",  # 隐藏自动化特征
             ],
         }
         if CHROME_PATH and Path(CHROME_PATH).exists():
@@ -113,16 +100,20 @@ async def main():
         )
         page = await context.new_page()
 
+        # 注入反检测脚本：隐藏 webdriver 等自动化标记
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
         """)
 
+        # 收集页面加载期间的所有网络请求
         collected_requests = []
+        # 收集抖音详情 API 的响应（用于提取高清视频/图片链接）
         detail_responses = []
 
         def collect_detail_response(response):
+            """过滤并收集抖音详情 API 的响应"""
             url = response.url
             if "/aweme/v1/web/aweme/detail/" in url or "/aweme/v1/web/note/" in url:
                 detail_responses.append(response)
@@ -134,13 +125,15 @@ async def main():
             "contentLength": response.headers.get("content-length"),
         }))
 
+        # 全局下载统计（跨所有 URL）
         total_stats = {
             "video": {"success": 0, "failed": 0, "skipped_small": 0, "skipped_large": 0, "skipped_dup": 0},
             "image": {"success": 0, "failed": 0, "skipped_small": 0, "skipped_large": 0, "skipped_dup": 0},
         }
-        urls_with_downloads = 0
+        urls_with_downloads = 0  # 有成功下载的 URL 数量
 
-        _last_final_url = None
+        # ── 步骤5：逐个处理 URL ──
+        _last_final_url = None  # 记录上一个 URL 的最终跳转地址，防止重复处理
         for url_idx, TARGET_URL in enumerate(url_list, 1):
             # 使用索引切片代替 clear()，避免上一页面 pending 的响应在 goto() 期间混入
             _req_start = len(collected_requests)
@@ -149,6 +142,7 @@ async def main():
             log(f"  [{url_idx}/{len(url_list)}] {TARGET_URL}")
             log(f"{'=' * 60}")
 
+            # 访问目标页面
             log("[2/6] 访问目标页面...")
             goto_ok = True
             try:
@@ -160,27 +154,32 @@ async def main():
             final_url = page.url
             log(f"  最终跳转地址: {final_url}")
 
+            # 异常检查：页面加载失败
             if not goto_ok:
                 log(f"  ⚠️ 页面加载失败（状态不确定，可能混用新旧页面内容），跳过当前 URL")
                 continue
 
+            # 异常检查：跳转前后地址相同，可能抖音拦截
             if final_url == _last_final_url:
                 log(f"  ⚠️ 跳转前后地址相同，可能未成功进入新页面，跳过")
                 continue
             _last_final_url = final_url
 
+            # 异常检查：页面不存在
             if any(s in final_url for s in ("/notfound", "/404", "/about:blank", "/error")):
                 log(f"  ⚠️ 目标页面不存在（{final_url}），跳过")
                 continue
 
+            # 等待页面内容渲染完成
             log("[3/6] 等待页面内容渲染...")
             try:
                 await page.wait_for_selector('video', timeout=15000)
                 log("  视频元素已加载")
             except Exception:
                 log("  未检测到视频元素，继续尝试...")
-            await asyncio.sleep(5)
+            await asyncio.sleep(5)  # 额外等待异步加载的内容
 
+            # ── 提取页面元数据 ──
             log("[4/6] 提取页面数据...")
 
             # 只取 goto() 开始后新增的响应，防止上一页面的 pending 响应混入
@@ -190,11 +189,13 @@ async def main():
             _new_requests = collected_requests[_req_start:]
             network_video_urls, network_image_urls = extract_urls_from_network(_new_requests)
 
+            # 提取视频/图片链接（优先级：API > SSR > DOM > 网络请求）
             api_videos = page_data.get("apiVideoUrls") or []
             api_images = page_data.get("apiImageUrls") or []
             dom_videos = page_data.get("videoUrls") or []
             dom_images = page_data.get("imageUrls") or []
 
+            # 视频链接去重和过滤
             if api_videos:
                 log(f"  API获取到 {len(api_videos)} 个视频链接（高清），优先使用")
                 all_video_urls = deduplicate_videos(list(dict.fromkeys(api_videos)))
@@ -206,6 +207,7 @@ async def main():
             all_video_urls = [u for u in all_video_urls
                               if not u.startswith("blob:") and not is_ui_asset(u)]
 
+            # 图片链接去重和过滤（按质量排序）
             if api_images:
                 log(f"  API/SSR获取到 {len(api_images)} 个图片链接，优先使用")
                 all_image_urls = list(dict.fromkeys(api_images))
@@ -218,6 +220,7 @@ async def main():
             all_image_urls = [u for u in all_image_urls
                               if not u.startswith("blob:") and not is_ui_asset(u)]
 
+            # 输出提取结果摘要
             author_info = page_data['author'] or '(未获取到)'
             if page_data.get('authorCode'):
                 author_info += f"  (@{page_data['authorCode']})"
@@ -225,6 +228,7 @@ async def main():
             log(f"【作者】{author_info}")
             log(f"【视频】{len(all_video_urls)} 个  【图片】{len(all_image_urls)} 个")
 
+            # ── 步骤6：下载文件 ──
             log(f"\n[5/6] 下载文件...")
             log(f"  视频目录: {DOWNLOAD_VIDEO_DIR}")
             video_download_results = await download_files(
@@ -238,8 +242,10 @@ async def main():
                 title=page_data["title"], author=page_data["author"], max_workers=8, md5_registry=md5_registry
             )
 
+            # ── 步骤7：保存结果 ──
             log(f"\n[6/6] 保存结果...")
 
+            # 统计下载结果（含去重计数）
             video_count = len([r for r in video_download_results if r["status"] in ("downloaded", "skipped_duplicate")])
             video_dup = len([r for r in video_download_results if r["status"] == "skipped_duplicate"])
             image_count = len([r for r in image_download_results if r["status"] in ("downloaded", "skipped_duplicate")])
@@ -250,6 +256,7 @@ async def main():
                 dup_info = f"  去重: 视频{video_dup}个 图片{image_dup}个"
             log(f"  视频: {video_count}/{len(all_video_urls)}  图片: {image_count}/{len(all_image_urls)}{dup_info}")
 
+            # 将下载状态映射到统计分类
             STATUS_MAP = {"downloaded": "success", "skipped_duplicate": "success"}
 
             for r in video_download_results:
@@ -264,12 +271,14 @@ async def main():
             if video_count > 0 or image_count > 0:
                 urls_with_downloads += 1
 
+            # 记录到数据库：标记该 URL 已处理
             if video_count > 0 or image_count > 0:
                 db.insert(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
                 log(f"  URL已记录到数据库")
             else:
                 log(f"  URL未记录（无成功下载）")
 
+            # 构建结果 JSON 并保存
             output_data = {
                 "targetUrl": TARGET_URL,
                 "finalUrl": page_data["pageUrl"],
@@ -300,6 +309,7 @@ async def main():
             result_path.write_text(result_json, encoding="utf-8")
             log(f"  结果已保存: {result_path}")
 
+        # ── 全部 URL 处理完毕，输出统计 ──
         log(f"\n{'=' * 60}")
         log(f"  全部完成! 共处理 {len(url_list)} 个 URL")
         log(f"{'=' * 60}")
@@ -309,6 +319,7 @@ async def main():
         video_total = sum(vs.values())
         image_total = sum(is_.values())
 
+        # 视频下载统计
         log(f"\n  ┌─ 视频下载统计 ─────────────────────────────")
         log(f"  │  总计: {video_total} 个")
         log(f"  │  成功: {vs['success']} 个")
@@ -321,6 +332,7 @@ async def main():
             log(f"  │  跳过(MD5重复): {vs['skipped_dup']} 个")
         log(f"  └──────────────────────────────────────────")
 
+        # 图片下载统计
         log(f"\n  ┌─ 图片下载统计 ─────────────────────────────")
         log(f"  │  总计: {image_total} 个")
         log(f"  │  成功: {is_['success']} 个")
@@ -338,13 +350,17 @@ async def main():
         total_skipped = vs['skipped_small'] + vs['skipped_large'] + vs['skipped_dup'] + \
                         is_['skipped_small'] + is_['skipped_large'] + is_['skipped_dup']
 
+        # 汇总统计
         log(f"\n  ┌─ 汇总 ────────────────────────────────────")
-        log(f"  │  URL 处理数: {len(url_list)} 个")
+        log(f"  │  URL 总数: {len(url_list) + skipped_count} 个")
+        log(f"  │  本次处理: {len(url_list)} 个")
+        if skipped_count:
+            log(f"  │  跳过(已处理URL): {skipped_count} 个")
         log(f"  │  有成功下载的 URL: {urls_with_downloads} 个")
         log(f"  │  文件总数: {video_total + image_total} 个")
         log(f"  │  下载成功: {total_success} 个")
         log(f"  │  下载失败: {total_failed} 个")
-        log(f"  │  跳过: {total_skipped} 个")
+        log(f"  │  跳过(文件): {total_skipped} 个")
         log(f"  └──────────────────────────────────────────")
         log(f"{'=' * 60}")
 
@@ -353,7 +369,3 @@ async def main():
         log("完成!")
 
     _process_lock.release()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
