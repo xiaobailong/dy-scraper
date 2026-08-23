@@ -1,3 +1,35 @@
+# -*- coding: utf-8 -*-
+"""
+抖音网页内容抓取工具 (Playwright 版本)
+获取: 页面标题、作者、图片下载地址、视频下载地址、文件大小
+并下载图片和视频到本地
+"""
+
+import asyncio
+import hashlib
+import json
+from datetime import datetime
+from pathlib import Path
+
+from config import (
+    CHROME_PATH,
+    DOWNLOAD_IMAGE_DIR,
+    DOWNLOAD_VIDEO_DIR,
+    RESULT_DIR,
+)
+from data.db_utils import DBUtils, FileLock
+from core.downloader import deduplicate_videos, download_files, extract_urls_from_network, sort_images_by_quality
+from common.logger import log
+import core.metadata as metadata
+from common.utils import clean_title, is_ui_asset, normalize_url, scan_existing_md5s
+from data.youdao import fetch_urls_from_youdao
+from data.local_file import fetch_urls_from_local_file
+
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    raise SystemExit("请先安装 playwright: pip install playwright")
+
 async def main():
     """主函数：协调整个抓取流程。
 
@@ -369,3 +401,7 @@ async def main():
         log("完成!")
 
     _process_lock.release()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
