@@ -63,6 +63,9 @@ async def main():
     if url_source == "youdao":
         url_list = fetch_urls_from_youdao()
     else:
+        # 本地文件模式：先拉取最新代码
+        from data.local_file import git_pull
+        git_pull()
         default_local_file = Path(__file__).parent / "data" / "tmp.txt"
         if default_local_file.exists():
             url_list = fetch_urls_from_local_file(str(default_local_file))
@@ -92,6 +95,11 @@ async def main():
         log(f"  跳过 {skipped_count} 个已处理的 URL（详见日志文件）")
     if not url_list:
         log("所有 URL 均已处理过，退出")
+        # 本地文件模式：即使全部已处理，也清空 tmp.txt 并 git 提交
+        if url_source != "youdao":
+            log("本地文件模式：清空 tmp.txt 并 git 提交...")
+            from data.local_file import clear_tmp_and_git_commit_push
+            clear_tmp_and_git_commit_push()
         _process_lock.release()
         return
 
@@ -395,6 +403,17 @@ async def main():
         log(f"  │  跳过(文件): {total_skipped} 个")
         log(f"  └──────────────────────────────────────────")
         log(f"{'=' * 60}")
+
+        # ── 本地文件模式：全部 URL 成功抓取并下载后，清空 tmp.txt 并 git 提交 ──
+        all_urls_successful = (urls_with_downloads == len(url_list) and total_failed == 0)
+        if url_source != "youdao" and all_urls_successful:
+            log("\n所有 URL 均成功抓取并下载，执行 git 提交...")
+            from data.local_file import clear_tmp_and_git_commit_push
+            clear_tmp_and_git_commit_push()
+        elif url_source == "youdao":
+            pass  # 有道云模式不执行 git 操作
+        else:
+            log(f"\n  ⚠️ 未全部成功（成功URL: {urls_with_downloads}/{len(url_list)}, 失败文件: {total_failed}），跳过 git 提交")
 
         log("\n关闭浏览器...")
         await browser.close()

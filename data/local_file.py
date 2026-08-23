@@ -2,6 +2,8 @@
 """从本地文件获取爬取目标 URL 列表"""
 
 import re
+import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from common.logger import log
@@ -58,3 +60,78 @@ def fetch_urls_from_local_file(file_path: str) -> list[str]:
 
     log(f"  提取到 {len(url_list)} 个有效 URL")
     return url_list
+
+
+def git_pull() -> None:
+    """执行 git pull 拉取最新代码"""
+    project_dir = Path(__file__).parent.parent
+    log("  执行 git pull...")
+    try:
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = (result.stdout.strip() or result.stderr.strip())
+        log(f"  git pull: {output}")
+    except Exception as e:
+        log(f"  git pull 失败: {e}")
+
+
+def clear_tmp_and_git_commit_push() -> None:
+    """清空 tmp.txt 并执行 git add、git commit、git push 提交整个项目"""
+    project_dir = Path(__file__).parent.parent
+
+    # 1. 清空 tmp.txt
+    tmp_file = Path(__file__).parent / "tmp.txt"
+    try:
+        tmp_file.write_text("", encoding="utf-8")
+        log("  tmp.txt 已清空")
+    except Exception as e:
+        log(f"  清空 tmp.txt 失败: {e}")
+
+    # 2. git add
+    log("  执行 git add...")
+    try:
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        log(f"  git add 失败: {e}")
+
+    # 3. git commit
+    log("  执行 git commit...")
+    commit_msg = f"auto: scrape completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    try:
+        result = subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = (result.stdout.strip() or result.stderr.strip())
+        log(f"  git commit: {output}")
+    except Exception as e:
+        log(f"  git commit 失败: {e}")
+
+    # 4. git push
+    log("  执行 git push...")
+    try:
+        result = subprocess.run(
+            ["git", "push"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = (result.stdout.strip() or result.stderr.strip())
+        log(f"  git push: {output}")
+    except Exception as e:
+        log(f"  git push 失败: {e}")
