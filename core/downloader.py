@@ -106,7 +106,7 @@ async def download_files(
             file_size = get_file_size(url)
             if file_size is not None:
                 if file_size < MIN_FILE_SIZE:
-                    log(f"  [{i + 1}/{len(urls)}] 跳过 (小于30KB): {url[:80]}...")
+                    log(f"  [{i + 1}/{len(urls)}] 跳过 (小于{format_bytes(MIN_FILE_SIZE)}): {url[:80]}...")
                     results.append({
                         "name": "", "url": url, "path": "", "size": format_bytes(file_size),
                         "md5": "", "status": "skipped_small"
@@ -134,7 +134,7 @@ async def download_files(
                 actual_size = final_path.stat().st_size
                 if actual_size < MIN_FILE_SIZE:
                     safe_unlink(final_path)
-                    log(f"  [{i + 1}/{len(urls)}] 删除 (实际小于30KB): {final_name} ({format_bytes(actual_size)})")
+                    log(f"  [{i + 1}/{len(urls)}] 删除 (实际小于{format_bytes(MIN_FILE_SIZE)}): {final_name} ({format_bytes(actual_size)})")
                     results.append({
                         "name": final_name, "url": url, "path": "", "size": format_bytes(actual_size),
                         "md5": md5, "status": "skipped_small"

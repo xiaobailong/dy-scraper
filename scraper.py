@@ -15,13 +15,14 @@ from config import (
     CHROME_PATH,
     DOWNLOAD_IMAGE_DIR,
     DOWNLOAD_VIDEO_DIR,
+    MIN_FILE_SIZE,
     RESULT_DIR,
 )
 from data.db_utils import DBUtils, FileLock
 from core.downloader import deduplicate_videos, download_files, extract_urls_from_network, sort_images_by_quality
 from common.logger import log
 import core.metadata as metadata
-from common.utils import clean_title, is_ui_asset, normalize_url, scan_existing_md5s
+from common.utils import clean_title, format_bytes, is_ui_asset, normalize_url, scan_existing_md5s
 from data.youdao import fetch_urls_from_youdao
 from data.local_file import fetch_urls_from_local_file
 
@@ -365,7 +366,7 @@ async def main():
         log(f"  │  成功: {vs['success']} 个")
         log(f"  │  失败: {vs['failed']} 个")
         if vs['skipped_small']:
-            log(f"  │  跳过(小于30KB): {vs['skipped_small']} 个")
+            log(f"  │  跳过(小于{format_bytes(MIN_FILE_SIZE)}): {vs['skipped_small']} 个")
         if vs['skipped_large']:
             log(f"  │  跳过(超过10MB): {vs['skipped_large']} 个")
         if vs['skipped_dup']:
@@ -378,7 +379,7 @@ async def main():
         log(f"  │  成功: {is_['success']} 个")
         log(f"  │  失败: {is_['failed']} 个")
         if is_['skipped_small']:
-            log(f"  │  跳过(小于30KB): {is_['skipped_small']} 个")
+            log(f"  │  跳过(小于{format_bytes(MIN_FILE_SIZE)}): {is_['skipped_small']} 个")
         if is_['skipped_large']:
             log(f"  │  跳过(超过10MB): {is_['skipped_large']} 个")
         if is_['skipped_dup']:
