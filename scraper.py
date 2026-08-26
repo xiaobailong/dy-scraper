@@ -298,6 +298,10 @@ async def main():
             image_count = len([r for r in image_download_results if r["status"] in ("downloaded", "skipped_duplicate")])
             image_dup = len([r for r in image_download_results if r["status"] == "skipped_duplicate"])
 
+            # 因大小被跳过的数量（有 URL 但不符合大小条件）
+            video_size_skipped = len([r for r in video_download_results if r["status"] in ("skipped_small", "skipped_large")])
+            image_size_skipped = len([r for r in image_download_results if r["status"] in ("skipped_small", "skipped_large")])
+
             dup_info = ""
             if video_dup or image_dup:
                 dup_info = f"  去重: 视频{video_dup}个 图片{image_dup}个"
@@ -322,9 +326,11 @@ async def main():
             if video_count > 0 or image_count > 0:
                 db.insert(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
                 log(f"  URL已记录到数据库")
-            else:
+            elif video_size_skipped > 0 or image_size_skipped > 0:
                 db.insert_skipped(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
-                log(f"  URL记录到跳过表（无成功下载）")
+                log(f"  URL记录到跳过表（有{len(all_video_urls) + len(all_image_urls)}个媒体URL但均因大小被跳过）")
+            else:
+                log(f"  URL未记录（无媒体URL）")
 
             # 构建结果 JSON 并保存
             output_data = {
