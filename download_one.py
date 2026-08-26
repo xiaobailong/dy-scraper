@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 抖音视频/图片独立下载工具
-用法: python download_douyin.py <抖音链接>
-      python download_douyin.py                    # 交互式输入链接
+用法: python download_one.py <抖音链接>
+      python download_one.py                       # 交互式输入链接（支持粘贴一大段文字自动提取链接）
 
+支持粘贴一整段文字（如微信/QQ聊天记录），自动从中提取所有有效的抖音分享链接。
 直接下载到系统下载目录（无文件大小限制）
 """
 
@@ -16,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from typing import List
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -66,6 +68,120 @@ def safe_unlink(path: Path) -> None:
                 time.sleep(0.3)
         except Exception:
             return
+
+
+# 抖音分享链接的正则模式
+_DOUYIN_URL_PATTERN = re.compile(
+    r'https?://'
+    r'(?:'
+    r'v\.douyin\.com/[A-Za-z0-9_-]+/?|'
+    r'(?:www\.)?douyin\.com/(?:video|note|user)/[A-Za-z0-9_-]+(?:\?[^\s]*)?|'
+    r'(?:www\.)?iesdouyin\.com/share/(?:video|note)/[A-Za-z0-9_-]+/?'
+    r')',
+    re.IGNORECASE
+)
+
+# 从完整链接中提取视频/图集 ID 的正则
+_DOUYIN_ID_PATTERN = re.compile(
+    r'douyin\.com/(video|note)/(\d+)',
+    re.IGNORECASE
+)
+_DOUYIN_SHORT_PATTERN = re.compile(
+    r'v\.douyin\.com/([A-Za-z0-9_-]+)',
+    re.IGNORECASE
+)
+
+
+def extract_douyin_urls(text: str) -> List[str]:
+    """从任意文本中提取所有有效的抖音分享链接，去重后返回"""
+    if not text or not text.strip():
+        return []
+    urls = _DOUYIN_URL_PATTERN.findall(text)
+    seen = set()
+    result = []
+    for url in urls:
+        url = url.rstrip(',.，。;；!！?？)）]】\'\"')
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+def _normalize_url(url: str) -> str:
+    """规范化抖音链接：去除查询参数、统一格式"""
+    match = _DOUYIN_ID_PATTERN.search(url)
+    if match:
+        content_type, content_id = match.group(1), match.group(2)
+        return f"https://www.douyin.com/{content_type}/{content_id}"
+    short_match = _DOUYIN_SHORT_PATTERN.search(url)
+    if short_match:
+        return f"https://v.douyin.com/{short_match.group(1)}"
+    return url.rstrip('/')
+
+
+def _resolve_short_link(url: str) -> str:
+    """通过 GET 请求解析短链接，获取重定向后的真实 URL（仅获取最终 URL，不下载内容）"""
+    try:
+        req = Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        })
+        with urlopen(req, timeout=5) as resp:
+            final_url = resp.geturl()
+            if final_url and final_url != url:
+                return final_url
+    except Exception:
+        pass
+    return url
+
+
+def deduplicate_douyin_urls(urls: List[str]) -> List[str]:
+    """对抖音链接进行智能去重：
+    - 规范化完整链接（去除查询参数）
+    - 解析短链接来判断是否与已有完整链接重复
+    - 按视频/图集 ID 去重，优先保留完整链接
+    """
+    if len(urls) <= 1:
+        return urls
+
+    full_urls = {}
+    short_urls = []
+
+    for url in urls:
+        match = _DOUYIN_ID_PATTERN.search(url)
+        if match:
+            content_type, content_id = match.group(1), match.group(2)
+            key = f"{content_type}:{content_id}"
+            normalized = _normalize_url(url)
+            if key not in full_urls:
+                full_urls[key] = normalized
+            continue
+
+        short_match = _DOUYIN_SHORT_PATTERN.search(url)
+        if short_match:
+            short_urls.append(url)
+            continue
+
+        if url not in full_urls:
+            full_urls[url] = url
+
+    result = list(full_urls.values())
+
+    for short_url in short_urls:
+        resolved = _resolve_short_link(short_url)
+        match = _DOUYIN_ID_PATTERN.search(resolved)
+        if match:
+            content_type, content_id = match.group(1), match.group(2)
+            key = f"{content_type}:{content_id}"
+            if key in full_urls:
+                log(f"  ⚡ 短链接 {short_url} 与已有链接重复，已跳过")
+                continue
+            full_urls[key] = _normalize_url(resolved)
+            result.append(_normalize_url(resolved))
+        else:
+            result.append(short_url)
+
+    return result
 
 
 def _locked_write(file_path: str, data: bytes) -> None:
@@ -333,20 +449,50 @@ async def process_url(target_url: str) -> None:
         await browser.close()
 
 
+def _read_multiline_input() -> str:
+    """读取多行输入，支持粘贴一大段文字，按 Ctrl+Z (Windows) 或 Ctrl+D (Unix) 结束"""
+    print("请粘贴包含抖音链接的文字内容（支持一大段文字，完成后按 Ctrl+Z 回车）:")
+    print("-" * 50)
+    try:
+        lines = sys.stdin.read().strip()
+    except KeyboardInterrupt:
+        return ""
+    print("-" * 50)
+    return lines
+
+
 def main():
     if len(sys.argv) > 1:
-        url = sys.argv[1].strip()
+        raw_text = sys.argv[1].strip()
     else:
-        url = input("请输入抖音链接: ").strip()
+        raw_text = _read_multiline_input()
 
-    if not url:
-        print("未输入链接，退出")
+    if not raw_text:
+        print("未输入任何内容，退出")
         return
 
-    if "douyin.com" not in url:
-        print("⚠️ 不是抖音链接，请确认")
+    urls = extract_douyin_urls(raw_text)
 
-    asyncio.run(process_url(url))
+    if not urls:
+        print("❌ 未从输入内容中提取到有效的抖音链接")
+        print("   支持的链接格式: v.douyin.com/xxx, douyin.com/video/xxx, douyin.com/note/xxx 等")
+        return
+
+    urls = deduplicate_douyin_urls(urls)
+
+    if len(urls) == 1:
+        log(f"✅ 提取到 1 个抖音链接，开始处理...")
+        asyncio.run(process_url(urls[0]))
+    else:
+        log(f"✅ 提取到 {len(urls)} 个抖音链接（已去重）:")
+        for i, url in enumerate(urls, 1):
+            log(f"  [{i}] {url}")
+        log("")
+        for idx, url in enumerate(urls, 1):
+            log(f"\n{'#' * 60}")
+            log(f"  处理第 {idx}/{len(urls)} 个链接")
+            log(f"{'#' * 60}")
+            asyncio.run(process_url(url))
 
 
 if __name__ == "__main__":
