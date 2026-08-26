@@ -15,6 +15,7 @@ from config import (
     CHROME_PATH,
     DOWNLOAD_IMAGE_DIR,
     DOWNLOAD_VIDEO_DIR,
+    MAX_FILE_SIZE,
     MIN_FILE_SIZE,
     RESULT_DIR,
 )
@@ -79,7 +80,7 @@ async def main():
         return
 
     # ── 步骤2：过滤已处理的 URL ──
-    # 查询数据库，跳过已抓取过的 URL
+    # 查询数据库，跳过已抓取过或已确认无内容的 URL
     db = DBUtils()
     new_urls = []
     skipped_count = 0
@@ -89,8 +90,13 @@ async def main():
         if info:
             skipped_count += 1
             log(f"  跳过(已处理): {u}  (处理时间: {info['create_time']}, 标题: {info['album_name']})", "debug")
-        else:
-            new_urls.append(u)
+            continue
+        sinfo = db.get_skipped_info(u)
+        if sinfo:
+            skipped_count += 1
+            log(f"  跳过(无内容): {u}  (处理时间: {sinfo['create_time']}, 标题: {sinfo['album_name']})", "debug")
+            continue
+        new_urls.append(u)
     url_list = new_urls
     if skipped_count:
         log(f"  跳过 {skipped_count} 个已处理的 URL（详见日志文件）")
@@ -317,7 +323,8 @@ async def main():
                 db.insert(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
                 log(f"  URL已记录到数据库")
             else:
-                log(f"  URL未记录（无成功下载）")
+                db.insert_skipped(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
+                log(f"  URL记录到跳过表（无成功下载）")
 
             # 构建结果 JSON 并保存
             output_data = {
@@ -368,7 +375,7 @@ async def main():
         if vs['skipped_small']:
             log(f"  │  跳过(小于{format_bytes(MIN_FILE_SIZE)}): {vs['skipped_small']} 个")
         if vs['skipped_large']:
-            log(f"  │  跳过(超过10MB): {vs['skipped_large']} 个")
+            log(f"  │  跳过(超过{format_bytes(MAX_FILE_SIZE)}): {vs['skipped_large']} 个")
         if vs['skipped_dup']:
             log(f"  │  跳过(MD5重复): {vs['skipped_dup']} 个")
         log(f"  └──────────────────────────────────────────")
@@ -381,7 +388,7 @@ async def main():
         if is_['skipped_small']:
             log(f"  │  跳过(小于{format_bytes(MIN_FILE_SIZE)}): {is_['skipped_small']} 个")
         if is_['skipped_large']:
-            log(f"  │  跳过(超过10MB): {is_['skipped_large']} 个")
+            log(f"  │  跳过(超过{format_bytes(MAX_FILE_SIZE)}): {is_['skipped_large']} 个")
         if is_['skipped_dup']:
             log(f"  │  跳过(MD5重复): {is_['skipped_dup']} 个")
         log(f"  └──────────────────────────────────────────")

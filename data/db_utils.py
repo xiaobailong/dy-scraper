@@ -70,6 +70,7 @@ class DBUtils:
     def __init__(self, db_file: str = DB_FILE):
         self.db_file = db_file
         self._init_table()
+        self._init_skipped_table()
         self._init_config_table()
 
     def lock_db(self, timeout: float = 60) -> FileLock:
@@ -120,6 +121,38 @@ class DBUtils:
                     )
                 """)
                 conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _init_skipped_table(self) -> None:
+        """创建跳过记录表，与 details_page 结构一致，用于记录无成功下载的 URL"""
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("PRAGMA table_info(details_page_skipped)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if not columns:
+                cursor.execute("""
+                    CREATE TABLE details_page_skipped (
+                        url TEXT PRIMARY KEY NOT NULL,
+                        album_name TEXT DEFAULT "",
+                        album_code TEXT DEFAULT "",
+                        remark TEXT DEFAULT "",
+                        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            else:
+                for col, col_type in [
+                    ("create_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("update_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("album_code", "TEXT DEFAULT ''"),
+                ]:
+                    if col not in columns:
+                        cursor.execute(
+                            f"ALTER TABLE details_page_skipped ADD COLUMN {col} {col_type}"
+                        )
+            conn.commit()
         finally:
             cursor.close()
             conn.close()
@@ -236,6 +269,51 @@ class DBUtils:
                 try:
                     cursor.execute(
                         "INSERT INTO details_page (url, album_name, album_code, remark, create_time, update_time) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (url.strip(), album_name.strip(), album_code.strip(), remark.strip(), beijing_time, beijing_time),
+                    )
+                    conn.commit()
+                finally:
+                    cursor.close()
+                    conn.close()
+        self._retry_write(_do_write)
+
+    def is_skipped_exist(self, url: str) -> bool:
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("SELECT 1 FROM details_page_skipped WHERE url=?", (url.strip(),))
+            return cursor.fetchone() is not None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_skipped_info(self, url: str) -> dict | None:
+        conn, cursor = self._connect()
+        try:
+            cursor.execute(
+                "SELECT album_name, album_code, create_time FROM details_page_skipped WHERE url=?",
+                (url.strip(),)
+            )
+            row = cursor.fetchone()
+            if row:
+                return {"album_name": row[0], "album_code": row[1], "create_time": row[2]}
+            return None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def insert_skipped(self, url: str, album_name: str = "", album_code: str = "", remark: str = "") -> None:
+        if self.is_skipped_exist(url) or self.is_exist(url):
+            return
+        beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        def _do_write():
+            with self.lock_db():
+                conn, cursor = self._connect()
+                try:
+                    cursor.execute(
+                        "INSERT INTO details_page_skipped (url, album_name, album_code, remark, create_time, update_time) "
                         "VALUES (?, ?, ?, ?, ?, ?)",
                         (url.strip(), album_name.strip(), album_code.strip(), remark.strip(), beijing_time, beijing_time),
                     )

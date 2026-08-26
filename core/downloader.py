@@ -58,7 +58,7 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bo
                     resp.close()
                     if save_path.exists():
                         safe_unlink(save_path)
-                    return False, f"超过10MB限制({format_bytes(total)})", ""
+                    return False, f"超过{format_bytes(MAX_FILE_SIZE)}限制({format_bytes(total)})", ""
                 chunks.append(chunk)
 
             data = b"".join(chunks)
@@ -113,7 +113,7 @@ async def download_files(
                     })
                     continue
                 if file_size > MAX_FILE_SIZE:
-                    log(f"  [{i + 1}/{len(urls)}] 跳过 (超过10MB): {url[:80]}...")
+                    log(f"  [{i + 1}/{len(urls)}] 跳过 (超过{format_bytes(MAX_FILE_SIZE)}): {url[:80]}...")
                     results.append({
                         "name": "", "url": url, "path": "", "size": format_bytes(file_size),
                         "md5": "", "status": "skipped_large"

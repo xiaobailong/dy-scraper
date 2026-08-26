@@ -1,0 +1,353 @@
+# -*- coding: utf-8 -*-
+"""
+抖音视频/图片独立下载工具
+用法: python download_douyin.py <抖音链接>
+      python download_douyin.py                    # 交互式输入链接
+
+直接下载到系统下载目录（无文件大小限制）
+"""
+
+import asyncio
+import hashlib
+import os
+import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    raise SystemExit("请先安装 playwright: pip install playwright")
+
+# ============================================================
+# 系统下载目录
+# ============================================================
+DOWNLOAD_DIR = Path(os.path.join(os.path.expanduser("~"), "Downloads")) / "douyin"
+VIDEO_DIR = DOWNLOAD_DIR / "视频"
+IMAGE_DIR = DOWNLOAD_DIR / "图片"
+
+
+def log(msg: str) -> None:
+    print(msg)
+
+
+def clean_title(title: str) -> str:
+    cleaned = re.sub(r'\s*-\s*抖音$', '', title)
+    cleaned = re.sub(r'\d{8}', '', cleaned)
+    cleaned = re.sub(r'[^\u4e00-\u9fffA-Za-z0-9_\-]', '', cleaned)
+    cleaned = re.sub(r'[_-]{2,}', '_', cleaned)
+    cleaned = cleaned.strip('_-')
+    return cleaned[:50] if cleaned else "douyin"
+
+
+def format_bytes(size: int) -> str:
+    if not size:
+        return "未知"
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TB"
+
+
+def safe_unlink(path: Path) -> None:
+    for attempt in range(3):
+        try:
+            if path.exists():
+                path.unlink()
+            return
+        except PermissionError:
+            if attempt < 2:
+                time.sleep(0.3)
+        except Exception:
+            return
+
+
+def _locked_write(file_path: str, data: bytes) -> None:
+    fd = os.open(file_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_BINARY)
+    try:
+        try:
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_LOCK, len(data) + 1)
+        except (ImportError, OSError):
+            pass
+        os.write(fd, data)
+        try:
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, len(data) + 1)
+        except (ImportError, OSError):
+            pass
+    finally:
+        os.close(fd)
+
+
+def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple:
+    """同步下载文件，返回 (成功, 大小描述, md5)，无大小限制"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        if referer:
+            headers["Referer"] = referer
+
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=300) as resp:
+            chunks = []
+            total = 0
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                total += len(chunk)
+                chunks.append(chunk)
+
+            data = b"".join(chunks)
+            md5 = hashlib.md5(data).hexdigest()
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            _locked_write(str(save_path), data)
+            return True, format_bytes(len(data)), md5
+    except Exception as e:
+        if save_path.exists():
+            safe_unlink(save_path)
+        return False, str(e), ""
+
+
+async def download_files(
+    urls: list,
+    save_dir: Path,
+    referer: str,
+    file_type: str,
+    title: str = "douyin",
+    author: str = "",
+    max_workers: int = 5,
+) -> list:
+    """异步下载多个文件，无大小限制，直接下载到最终路径"""
+    if not urls:
+        return []
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    loop = asyncio.get_running_loop()
+    safe_title = clean_title(title)
+    safe_author = clean_title(author) if author else ""
+    download_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        tasks = []
+        for i, url in enumerate(urls):
+            ext = Path(urlparse(url).path).suffix
+            if not ext or len(ext) > 10:
+                ext = ".mp4" if file_type == "video" else ".jpg"
+
+            prefix = f"{safe_author}_" if safe_author else ""
+            final_name = f"{prefix}{safe_title}_{download_time}_{i}{ext}"
+            final_path = save_dir / final_name
+
+            log(f"  [{i + 1}/{len(urls)}] 下载中: {url[:80]}...")
+            task = loop.run_in_executor(pool, download_file_sync, url, final_path, referer)
+            tasks.append((i, url, final_name, final_path, task))
+
+        for i, url, final_name, final_path, task in tasks:
+            success, info, md5 = await task
+            if success:
+                log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})")
+                results.append({
+                    "name": final_name, "url": url, "path": str(final_path),
+                    "size": info, "md5": md5, "status": "downloaded"
+                })
+            else:
+                if final_path.exists():
+                    safe_unlink(final_path)
+                log(f"  [{i + 1}/{len(urls)}] 失败: {info}")
+                results.append({
+                    "name": "", "url": url, "path": "", "size": None,
+                    "md5": "", "status": "failed", "error": info
+                })
+
+    return results
+
+
+# ============================================================
+# 从 core 模块导入提取逻辑
+# ============================================================
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+from core.downloader import deduplicate_videos, extract_urls_from_network, sort_images_by_quality
+from core.metadata import extract_metadata
+
+
+async def process_url(target_url: str) -> None:
+    """处理单个抖音链接：提取并下载所有视频和图片"""
+    log("=" * 60)
+    log(f"  抖音下载工具")
+    log(f"  目标: {target_url}")
+    log(f"  下载目录: {DOWNLOAD_DIR}")
+    log("=" * 60)
+
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+    async with async_playwright() as p:
+        launch_kwargs = {
+            "headless": True,
+            "args": [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        }
+        from config import config
+        config.reload_config()
+        chromepath = getattr(config, "CHROME_PATH", "")
+        if chromepath and Path(chromepath).exists():
+            launch_kwargs["executable_path"] = chromepath
+            log(f"  使用浏览器: {chromepath}")
+        else:
+            log("  使用 Playwright 自带浏览器")
+
+        browser = await p.chromium.launch(**launch_kwargs)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+        )
+        page = await context.new_page()
+
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+        """)
+
+        collected_requests = []
+        detail_responses = []
+
+        def collect_detail_response(response):
+            url = response.url
+            if "/aweme/v1/web/aweme/detail/" in url or "/aweme/v1/web/note/" in url:
+                detail_responses.append(response)
+
+        page.on("response", collect_detail_response)
+        page.on("response", lambda r: collected_requests.append({
+            "url": r.url,
+            "contentType": r.headers.get("content-type", ""),
+            "contentLength": r.headers.get("content-length"),
+        }))
+
+        _req_start = len(collected_requests)
+        _detail_start = len(detail_responses)
+
+        # 访问页面
+        log("\n[1/4] 访问目标页面...")
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            log(f"  页面加载超时: {e}")
+
+        final_url = page.url
+        log(f"  最终跳转: {final_url}")
+
+        # 等待渲染
+        log("[2/4] 等待页面渲染...")
+        try:
+            await page.wait_for_selector('video', timeout=15000)
+            log("  视频元素已加载")
+        except Exception:
+            log("  未检测到视频元素，继续...")
+        await asyncio.sleep(5)
+
+        # 提取数据
+        log("[3/4] 提取页面数据...")
+        _new_detail = detail_responses[_detail_start:]
+        page_data = await extract_metadata(page, _new_detail)
+
+        _new_requests = collected_requests[_req_start:]
+        network_video_urls, network_image_urls = extract_urls_from_network(_new_requests)
+
+        api_videos = page_data.get("apiVideoUrls") or []
+        api_images = page_data.get("apiImageUrls") or []
+        dom_videos = page_data.get("videoUrls") or []
+        dom_images = page_data.get("imageUrls") or []
+
+        if api_videos:
+            log(f"  API获取到 {len(api_videos)} 个视频链接（高清），优先使用")
+            all_video_urls = deduplicate_videos(list(dict.fromkeys(api_videos)))
+        else:
+            log(f"  API未获取到视频链接，退到DOM+网络请求")
+            all_video_urls = list(dict.fromkeys(dom_videos + network_video_urls))
+            all_video_urls = deduplicate_videos(all_video_urls)
+
+        all_video_urls = [u for u in all_video_urls if not u.startswith("blob:")]
+
+        if api_images:
+            log(f"  API/SSR获取到 {len(api_images)} 个图片链接，优先使用")
+            all_image_urls = list(dict.fromkeys(api_images))
+            all_image_urls = sort_images_by_quality(all_image_urls)
+        else:
+            log(f"  API/SSR均未获取到图片链接，退到DOM+网络请求")
+            all_image_urls = list(dict.fromkeys(dom_images + network_image_urls))
+            all_image_urls = sort_images_by_quality(all_image_urls)
+
+        all_image_urls = [u for u in all_image_urls if not u.startswith("blob:")]
+
+        author_info = page_data['author'] or '(未获取到)'
+        if page_data.get('authorCode'):
+            author_info += f"  (@{page_data['authorCode']})"
+        log(f"\n【页面标题】{page_data['title'] or '(未获取到)'}")
+        log(f"【作者】{author_info}")
+        log(f"【视频】{len(all_video_urls)} 个  【图片】{len(all_image_urls)} 个")
+
+        # 下载
+        log(f"\n[4/4] 下载文件（无大小限制）...")
+        log(f"  视频目录: {VIDEO_DIR}")
+        video_results = await download_files(
+            all_video_urls, VIDEO_DIR, final_url, "video",
+            title=page_data["title"], author=page_data["author"]
+        )
+
+        log(f"  图片目录: {IMAGE_DIR}")
+        image_results = await download_files(
+            all_image_urls, IMAGE_DIR, final_url, "image",
+            title=page_data["title"], author=page_data["author"], max_workers=8
+        )
+
+        # 统计
+        video_ok = len([r for r in video_results if r["status"] == "downloaded"])
+        video_fail = len([r for r in video_results if r["status"] == "failed"])
+        image_ok = len([r for r in image_results if r["status"] == "downloaded"])
+        image_fail = len([r for r in image_results if r["status"] == "failed"])
+
+        log(f"\n{'=' * 60}")
+        log(f"  下载完成!")
+        log(f"  视频: 成功 {video_ok}/{len(all_video_urls)}, 失败 {video_fail}")
+        log(f"  图片: 成功 {image_ok}/{len(all_image_urls)}, 失败 {image_fail}")
+        log(f"  保存位置: {DOWNLOAD_DIR}")
+        log(f"{'=' * 60}")
+
+        await browser.close()
+
+
+def main():
+    if len(sys.argv) > 1:
+        url = sys.argv[1].strip()
+    else:
+        url = input("请输入抖音链接: ").strip()
+
+    if not url:
+        print("未输入链接，退出")
+        return
+
+    if "douyin.com" not in url:
+        print("⚠️ 不是抖音链接，请确认")
+
+    asyncio.run(process_url(url))
+
+
+if __name__ == "__main__":
+    main()
