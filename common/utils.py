@@ -2,6 +2,7 @@
 """通用工具函数"""
 
 import hashlib
+import os
 import re
 import time
 from pathlib import Path
@@ -9,6 +10,13 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from config import UI_ASSET_DOMAINS
+
+try:
+    from PIL import Image
+    import imagehash
+    _HASH_AVAILABLE = True
+except ImportError:
+    _HASH_AVAILABLE = False
 
 
 def format_bytes(size: int) -> str:
@@ -120,3 +128,128 @@ def safe_rename(src: Path, dst: Path) -> bool: # type: ignore
                 time.sleep(delay)
             else:
                 raise
+
+
+# ============================================================
+# pHash 图片相似度去重
+# ============================================================
+
+def compute_phash(file_path: Path) -> str | None:
+    """计算图片的感知哈希（pHash），用于相似度比较。失败返回 None。"""
+    if not _HASH_AVAILABLE:
+        return None
+    try:
+        img = Image.open(file_path)
+        return str(imagehash.phash(img))
+    except Exception:
+        return None
+
+
+def check_and_dedup_phash(file_path: Path, directory: Path) -> bool:
+    """检查 file_path 是否与 directory 下已有图片 pHash 相似。
+    如果相似，删除文件较小的那个，返回 True 表示当前文件被删除。
+    返回 False 表示当前文件保留（无重复或当前文件更大）。
+    """
+    if not _HASH_AVAILABLE:
+        return False
+    if not file_path.exists():
+        return False
+
+    current_hash = compute_phash(file_path)
+    if current_hash is None:
+        return False
+
+    current_size = file_path.stat().st_size
+
+    for existing in directory.iterdir():
+        if not existing.is_file():
+            continue
+        if existing.samefile(file_path):
+            continue
+        if existing.suffix.lower() not in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'):
+            continue
+
+        existing_hash = compute_phash(existing)
+        if existing_hash is None:
+            continue
+
+        # Hamming distance <= 5 视为同一张图
+        try:
+            dist = imagehash.hex_to_hash(current_hash) - imagehash.hex_to_hash(existing_hash)
+        except Exception:
+            continue
+
+        if dist <= 5:
+            existing_size = existing.stat().st_size
+            if current_size >= existing_size:
+                safe_unlink(existing)
+                return False
+            else:
+                safe_unlink(file_path)
+                return True
+
+    return False
+
+
+# ============================================================
+# 图片 URL 过滤（封面图、表情包/贴纸）
+# ============================================================
+
+# 封面图 URL 特征
+_COVER_URL_PATTERNS = [
+    r'[?&]cover=',
+    r'/cover/',  # 封面图路径
+    r'video_cover',
+    r'cover_image',
+]
+
+# 表情包/贴纸 URL 特征
+_EMOJI_URL_PATTERNS = [
+    r'emoticon',
+    r'sticker',
+    r'emoji',
+    r'/obj/tos-cn-i-tsj2vxp0zn/',  # 抖音表情包 CDN
+    r'gif\.douyinpic\.com',  # GIF 表情
+]
+
+# 封面图尺寸阈值（宽高比接近 9:16 竖屏封面，且边长较小）
+_COVER_ASPECT_RATIO_MIN = 0.5   # 9:16 ≈ 0.5625
+_COVER_ASPECT_RATIO_MAX = 0.65
+_COVER_MAX_WIDTH = 800  # 封面图宽一般不超过 800px
+
+
+def is_cover_image_url(url: str) -> bool:
+    """根据 URL 特征判断是否为封面图"""
+    url_lower = url.lower()
+    for pat in _COVER_URL_PATTERNS:
+        if re.search(pat, url_lower):
+            return True
+    return False
+
+
+def is_emoji_sticker_url(url: str) -> bool:
+    """根据 URL 特征判断是否为表情包/贴纸"""
+    url_lower = url.lower()
+    for pat in _EMOJI_URL_PATTERNS:
+        if re.search(pat, url_lower):
+            return True
+    return False
+
+
+def is_emoji_by_dimensions(file_path: Path) -> bool:
+    """下载后检查：GIF 文件宽高比接近正方形且尺寸较小，判定为表情包。
+    返回 True 表示应删除。"""
+    if file_path.suffix.lower() != '.gif':
+        return False
+    try:
+        img = Image.open(file_path)
+        w, h = img.size
+        if w <= 0 or h <= 0:
+            return False
+        ratio = w / h if w < h else h / w
+        # 接近正方形 + 边长 <= 400px → 表情包
+        if ratio > 0.6 and max(w, h) <= 400:
+            return True
+    except Exception:
+        pass
+    return False

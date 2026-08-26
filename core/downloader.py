@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 from config import MAX_FILE_SIZE, MIN_FILE_SIZE
 from common.logger import log
-from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink
+from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink, check_and_dedup_phash, is_emoji_by_dimensions
 
 
 def _locked_write(file_path: str, data: bytes) -> None:
@@ -151,6 +151,28 @@ async def download_files(
                     continue
 
                 md5_registry.add(md5)
+
+                # 图片下载后检查：表情包尺寸过滤
+                if file_type == "image" and is_emoji_by_dimensions(final_path):
+                    safe_unlink(final_path)
+                    log(f"  [{i + 1}/{len(urls)}] 删除 (表情包): {final_name} ({info})")
+                    results.append({
+                        "name": final_name, "url": url, "path": "", "size": info,
+                        "md5": md5, "status": "skipped_emoji"
+                    })
+                    continue
+
+                # 图片下载后检查：pHash 相似度去重
+                if file_type == "image" and check_and_dedup_phash(final_path, save_dir):
+                    if not final_path.exists():
+                        log(f"  [{i + 1}/{len(urls)}] 删除 (pHash重复-较小): {final_name} ({info})")
+                        results.append({
+                            "name": final_name, "url": url, "path": "", "size": info,
+                            "md5": md5, "status": "skipped_phash_dup"
+                        })
+                        continue
+                    else:
+                        log(f"  [{i + 1}/{len(urls)}] pHash重复，保留当前(较大): {final_name} ({info})")
 
                 log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})")
                 results.append({

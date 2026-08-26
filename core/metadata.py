@@ -529,9 +529,8 @@ async () => {
 
     contentArea.querySelectorAll('video[poster]').forEach(video => {
         const poster = video.getAttribute('poster');
-        if (poster && !result.imageUrls.includes(poster)) {
+        if (poster && !result.coverUrl) {
             result.coverUrl = poster;
-            result.imageUrls.push(poster);
         }
     });
 

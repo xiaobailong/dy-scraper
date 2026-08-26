@@ -23,7 +23,7 @@ from data.db_utils import DBUtils, FileLock
 from core.downloader import deduplicate_videos, download_files, extract_urls_from_network, sort_images_by_quality
 from common.logger import log
 import core.metadata as metadata
-from common.utils import clean_title, format_bytes, is_ui_asset, normalize_url, scan_existing_md5s
+from common.utils import clean_title, format_bytes, is_cover_image_url, is_emoji_sticker_url, is_ui_asset, normalize_url, scan_existing_md5s
 from data.youdao import fetch_urls_from_youdao
 from data.local_file import fetch_urls_from_local_file
 
@@ -265,7 +265,9 @@ async def main():
                 all_image_urls = sort_images_by_quality(all_image_urls)
 
             all_image_urls = [u for u in all_image_urls
-                              if not u.startswith("blob:") and not is_ui_asset(u)]
+                              if not u.startswith("blob:") and not is_ui_asset(u)
+                              and not is_cover_image_url(u)
+                              and not is_emoji_sticker_url(u)]
 
             # 输出提取结果摘要
             author_info = page_data['author'] or '(未获取到)'
