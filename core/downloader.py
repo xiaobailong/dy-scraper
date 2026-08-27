@@ -13,22 +13,23 @@ from urllib.request import Request, urlopen
 
 from config import MAX_FILE_SIZE, MIN_FILE_SIZE
 from common.logger import log
-from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink, check_and_dedup_phash, is_emoji_by_dimensions
+from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink, check_and_dedup_phash, check_and_dedup_video_phash, compute_video_fingerprint, is_emoji_by_dimensions
 
 
 def _locked_write(file_path: str, data: bytes) -> None:
     """Windows 文件锁写入：打开文件→加锁→写入→解锁→关闭，防止其他进程（如杀毒软件）在写入期间占用"""
-    fd = os.open(file_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_BINARY)
+    fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_BINARY)
     try:
+        nbytes = max(len(data), 1)
         try:
             import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_LOCK, len(data) + 1)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, nbytes)
         except (ImportError, OSError):
             pass
         os.write(fd, data)
         try:
             import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, len(data) + 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, nbytes)
         except (ImportError, OSError):
             pass
     finally:
@@ -65,6 +66,8 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bo
             md5 = hashlib.md5(data).hexdigest()
             save_path.parent.mkdir(parents=True, exist_ok=True)
             _locked_write(str(save_path), data)
+            if not save_path.exists():
+                return False, "文件写入后消失（可能被杀毒软件拦截）", ""
             return True, format_bytes(len(data)), md5
     except Exception as e:
         if save_path.exists():
@@ -81,6 +84,7 @@ async def download_files(
     author: str = "",
     max_workers: int = 5,
     md5_registry: set[str] | None = None,
+    video_hash_registry: dict[str, list[str]] | None = None,
 ) -> list[dict]:
     """异步下载多个文件，文件命名为 {author}_{title}_{时间}_{idx}.{ext}，通过 MD5 去重，直接下载到最终路径"""
     if not urls:
@@ -88,6 +92,8 @@ async def download_files(
 
     if md5_registry is None:
         md5_registry = set()
+    if video_hash_registry is None:
+        video_hash_registry = {}
 
     save_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -131,7 +137,15 @@ async def download_files(
         for i, url, final_name, final_path, task in tasks:
             success, info, md5 = await task
             if success:
-                actual_size = final_path.stat().st_size
+                try:
+                    actual_size = final_path.stat().st_size
+                except FileNotFoundError:
+                    log(f"  [{i + 1}/{len(urls)}] 失败 (文件丢失): {final_name}")
+                    results.append({
+                        "name": final_name, "url": url, "path": "", "size": info,
+                        "md5": md5, "status": "failed", "error": "文件写入后消失"
+                    })
+                    continue
                 if actual_size < MIN_FILE_SIZE:
                     safe_unlink(final_path)
                     log(f"  [{i + 1}/{len(urls)}] 删除 (实际小于{format_bytes(MIN_FILE_SIZE)}): {final_name} ({format_bytes(actual_size)})")
@@ -151,6 +165,26 @@ async def download_files(
                     continue
 
                 md5_registry.add(md5)
+
+                # 视频下载后检查：pHash 相似度去重（不同码率/编码的同一视频）
+                if file_type == "video":
+                    if check_and_dedup_video_phash(final_path, video_hash_registry):
+                        # 当前文件被删除（是重复且较小）
+                        if not final_path.exists():
+                            log(f"  [{i + 1}/{len(urls)}] 删除 (视频pHash重复-较小): {final_name} ({info})")
+                            results.append({
+                                "name": final_name, "url": url, "path": "", "size": info,
+                                "md5": md5, "status": "skipped_video_phash_dup"
+                            })
+                            continue
+                        else:
+                            # 已有文件被删除，当前文件保留
+                            log(f"  [{i + 1}/{len(urls)}] 视频pHash重复，保留当前(较大): {final_name} ({info})")
+                    # 将当前视频指纹加入注册表（无论是新视频还是替换了旧视频）
+                    if final_path.exists():
+                        fingerprint = compute_video_fingerprint(final_path)
+                        if fingerprint:
+                            video_hash_registry[final_name] = fingerprint
 
                 # 图片下载后检查：表情包尺寸过滤
                 if file_type == "image" and is_emoji_by_dimensions(final_path):

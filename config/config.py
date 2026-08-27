@@ -17,6 +17,7 @@ _TYPE_CONVERTERS = {
     "MAX_FILE_SIZE": int,
     "UI_ASSET_DOMAINS": lambda v: set(json.loads(v)),
     "LOCAL_URL_FILE": Path,
+    "FFMPEG_BIN_DIR": Path,
 }
 
 _loaded = False

@@ -13,8 +13,6 @@ from pathlib import Path
 
 from config import (
     CHROME_PATH,
-    DOWNLOAD_IMAGE_DIR,
-    DOWNLOAD_VIDEO_DIR,
     MAX_FILE_SIZE,
     MIN_FILE_SIZE,
     RESULT_DIR,
@@ -23,7 +21,7 @@ from data.db_utils import DBUtils, FileLock
 from core.downloader import deduplicate_videos, download_files, extract_urls_from_network, sort_images_by_quality
 from common.logger import log
 import core.metadata as metadata
-from common.utils import clean_title, format_bytes, is_cover_image_url, is_emoji_sticker_url, is_ui_asset, normalize_url, scan_existing_md5s
+from common.utils import clean_title, format_bytes, is_cover_image_url, is_emoji_sticker_url, is_ui_asset, normalize_url, safe_rename, safe_unlink, scan_existing_md5s, scan_existing_video_hashes
 from data.youdao import fetch_urls_from_youdao
 from data.local_file import fetch_urls_from_local_file
 
@@ -31,6 +29,58 @@ try:
     from playwright.async_api import async_playwright
 except ImportError:
     raise SystemExit("请先安装 playwright: pip install playwright")
+
+# 临时下载目录（先下载到这里，全部 URL 处理完再移动到最终目录）
+TEMP_DOWNLOAD_BASE = Path("C:/Users/766698/Downloads")
+FINAL_BASE_DIR = Path("D:/TMP/douyin")
+
+# 临时下载子目录
+TEMP_VIDEO_DIR = TEMP_DOWNLOAD_BASE / "douyin_temp_videos"
+TEMP_IMAGE_DIR = TEMP_DOWNLOAD_BASE / "douyin_temp_images"
+
+# 最终目录
+FINAL_VIDEO_DIR = FINAL_BASE_DIR / "videos"
+FINAL_IMAGE_DIR = FINAL_BASE_DIR / "images"
+
+
+def _clean_temp_dir(dir_path: Path) -> None:
+    """清空临时目录中的所有文件"""
+    if not dir_path.exists():
+        return
+    for f in dir_path.iterdir():
+        if f.is_file():
+            safe_unlink(f)
+
+
+def _move_files_to_final(src_dir: Path, dst_dir: Path) -> tuple[int, int]:
+    """将 src_dir 中的所有文件移动到 dst_dir，跳过已存在的文件。
+    返回 (移动成功数, 跳过数)"""
+    if not src_dir.exists():
+        return 0, 0
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    skipped = 0
+    for f in src_dir.iterdir():
+        if not f.is_file():
+            continue
+        dst = dst_dir / f.name
+        if dst.exists():
+            log(f"  跳过 (目标已存在): {f.name}")
+            safe_unlink(f)
+            skipped += 1
+        else:
+            try:
+                safe_rename(f, dst)
+                moved += 1
+            except Exception as e:
+                log(f"  移动失败: {f.name} - {e}")
+                skipped += 1
+    try:
+        src_dir.rmdir()
+    except Exception:
+        pass
+    return moved, skipped
+
 
 async def main():
     """主函数：协调整个抓取流程。
@@ -112,15 +162,26 @@ async def main():
 
     log(f"\n共 {len(url_list)} 个 URL 待处理\n")
 
-    # 确保下载目录存在
-    DOWNLOAD_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-    DOWNLOAD_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    # 确保下载目录存在（临时目录 + 最终目录）
+    TEMP_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    FINAL_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 清空临时目录中上次可能残留的文件
+    _clean_temp_dir(TEMP_VIDEO_DIR)
+    _clean_temp_dir(TEMP_IMAGE_DIR)
 
     # ── 步骤3：扫描已有文件 MD5 注册表 ──
-    # 用于下载时跳过内容完全相同的文件
+    # 扫描最终目录，用于下载时跳过内容完全相同的文件
     log("\n[0/6] 扫描已有文件 MD5，用于去重...")
-    md5_registry = scan_existing_md5s(DOWNLOAD_VIDEO_DIR) | scan_existing_md5s(DOWNLOAD_IMAGE_DIR)
+    md5_registry = scan_existing_md5s(FINAL_VIDEO_DIR) | scan_existing_md5s(FINAL_IMAGE_DIR)
     log(f"  已有 {len(md5_registry)} 个文件，将跳过重复下载")
+
+    # 扫描已有视频的 pHash 指纹，用于相似视频去重（不同码率/编码的同一视频）
+    video_hash_registry = scan_existing_video_hashes(FINAL_VIDEO_DIR)
+    if video_hash_registry:
+        log(f"  已扫描 {len(video_hash_registry)} 个视频的 pHash 指纹")
 
     # ── 步骤4：启动 Playwright 无头浏览器 ──
     log("\n[1/6] 启动浏览器...")
@@ -174,7 +235,7 @@ async def main():
 
         # 全局下载统计（跨所有 URL）
         total_stats = {
-            "video": {"success": 0, "failed": 0, "skipped_small": 0, "skipped_large": 0, "skipped_dup": 0},
+            "video": {"success": 0, "failed": 0, "skipped_small": 0, "skipped_large": 0, "skipped_dup": 0, "skipped_video_phash_dup": 0},
             "image": {"success": 0, "failed": 0, "skipped_small": 0, "skipped_large": 0, "skipped_dup": 0},
         }
         urls_with_downloads = 0  # 有成功下载的 URL 数量
@@ -279,16 +340,18 @@ async def main():
 
             # ── 步骤6：下载文件 ──
             log(f"\n[5/6] 下载文件...")
-            log(f"  视频目录: {DOWNLOAD_VIDEO_DIR}")
+            log(f"  视频临时目录: {TEMP_VIDEO_DIR}")
             video_download_results = await download_files(
-                all_video_urls, DOWNLOAD_VIDEO_DIR, final_url, "video",
-                title=page_data["title"], author=page_data["author"], md5_registry=md5_registry
+                all_video_urls, TEMP_VIDEO_DIR, final_url, "video",
+                title=page_data["title"], author=page_data["author"], md5_registry=md5_registry,
+                video_hash_registry=video_hash_registry
             )
 
-            log(f"  图片目录: {DOWNLOAD_IMAGE_DIR}")
+            log(f"  图片临时目录: {TEMP_IMAGE_DIR}")
             image_download_results = await download_files(
-                all_image_urls, DOWNLOAD_IMAGE_DIR, final_url, "image",
-                title=page_data["title"], author=page_data["author"], max_workers=8, md5_registry=md5_registry
+                all_image_urls, TEMP_IMAGE_DIR, final_url, "image",
+                title=page_data["title"], author=page_data["author"], max_workers=8, md5_registry=md5_registry,
+                video_hash_registry=video_hash_registry
             )
 
             # ── 步骤7：保存结果 ──
@@ -365,6 +428,18 @@ async def main():
             result_path.write_text(result_json, encoding="utf-8")
             log(f"  结果已保存: {result_path}")
 
+        # ── 全部 URL 处理完毕，移动文件到最终目录 ──
+        log(f"\n{'=' * 60}")
+        log(f"  移动文件到最终目录...")
+        log(f"{'=' * 60}")
+        log(f"  视频最终目录: {FINAL_VIDEO_DIR}")
+        video_moved, video_skipped = _move_files_to_final(TEMP_VIDEO_DIR, FINAL_VIDEO_DIR)
+        log(f"  视频: 移动 {video_moved} 个, 跳过 {video_skipped} 个")
+
+        log(f"  图片最终目录: {FINAL_IMAGE_DIR}")
+        image_moved, image_skipped = _move_files_to_final(TEMP_IMAGE_DIR, FINAL_IMAGE_DIR)
+        log(f"  图片: 移动 {image_moved} 个, 跳过 {image_skipped} 个")
+
         # ── 全部 URL 处理完毕，输出统计 ──
         log(f"\n{'=' * 60}")
         log(f"  全部完成! 共处理 {len(url_list)} 个 URL")
@@ -386,6 +461,8 @@ async def main():
             log(f"  │  跳过(超过{format_bytes(MAX_FILE_SIZE)}): {vs['skipped_large']} 个")
         if vs['skipped_dup']:
             log(f"  │  跳过(MD5重复): {vs['skipped_dup']} 个")
+        if vs['skipped_video_phash_dup']:
+            log(f"  │  跳过(视频pHash重复): {vs['skipped_video_phash_dup']} 个")
         log(f"  └──────────────────────────────────────────")
 
         # 图片下载统计
@@ -403,7 +480,7 @@ async def main():
 
         total_success = vs['success'] + is_['success']
         total_failed = vs['failed'] + is_['failed']
-        total_skipped = vs['skipped_small'] + vs['skipped_large'] + vs['skipped_dup'] + \
+        total_skipped = vs['skipped_small'] + vs['skipped_large'] + vs['skipped_dup'] + vs['skipped_video_phash_dup'] + \
                         is_['skipped_small'] + is_['skipped_large'] + is_['skipped_dup']
 
         # 汇总统计
