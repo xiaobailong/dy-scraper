@@ -22,7 +22,8 @@ from core.downloader import deduplicate_videos, download_files, extract_urls_fro
 from common.logger import log
 import core.metadata as metadata
 from common.utils import clean_title, format_bytes, is_cover_image_url, is_emoji_sticker_url, is_ui_asset, normalize_url, safe_rename, safe_unlink, scan_existing_md5s, scan_existing_video_hashes
-from data.youdao import fetch_urls_from_youdao
+from api.youdao import fetch_urls_from_youdao
+from api.douyin_detail import create_detail_response_collector
 from data.local_file import fetch_urls_from_local_file
 
 try:
@@ -220,13 +221,7 @@ async def main():
         # 收集抖音详情 API 的响应（用于提取高清视频/图片链接）
         detail_responses = []
 
-        def collect_detail_response(response):
-            """过滤并收集抖音详情 API 的响应"""
-            url = response.url
-            if "/aweme/v1/web/aweme/detail/" in url or "/aweme/v1/web/note/" in url:
-                detail_responses.append(response)
-
-        page.on("response", collect_detail_response)
+        page.on("response", create_detail_response_collector(detail_responses))
         page.on("response", lambda response: collected_requests.append({
             "url": response.url,
             "contentType": response.headers.get("content-type", ""),

@@ -296,6 +296,7 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).parent))
 from core.downloader import deduplicate_videos, extract_urls_from_network, sort_images_by_quality
 from core.metadata import extract_metadata
+from api.douyin_detail import create_detail_response_collector
 
 
 async def process_url(target_url: str) -> None:
@@ -344,12 +345,7 @@ async def process_url(target_url: str) -> None:
         collected_requests = []
         detail_responses = []
 
-        def collect_detail_response(response):
-            url = response.url
-            if "/aweme/v1/web/aweme/detail/" in url or "/aweme/v1/web/note/" in url:
-                detail_responses.append(response)
-
-        page.on("response", collect_detail_response)
+        page.on("response", create_detail_response_collector(detail_responses))
         page.on("response", lambda r: collected_requests.append({
             "url": r.url,
             "contentType": r.headers.get("content-type", ""),

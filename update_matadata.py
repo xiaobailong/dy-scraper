@@ -17,6 +17,7 @@ import core.metadata as metadata
 from data.db_utils import DBUtils
 from common.utils import normalize_url
 from config import CHROME_PATH
+from api.douyin_detail import create_detail_response_collector
 
 
 async def run():
@@ -40,10 +41,6 @@ async def run():
 
     detail_responses = []
 
-    def on_response(response):
-        if "/aweme/v1/web/aweme/detail/" in response.url or "/aweme/v1/web/note/" in response.url:
-            detail_responses.append(response)
-
     async with async_playwright() as p:
         launch_kwargs = {
             "headless": True,
@@ -66,7 +63,7 @@ async def run():
             viewport={"width": 1280, "height": 800},
         )
         page = await context.new_page()
-        page.on("response", on_response)
+        page.on("response", create_detail_response_collector(detail_responses))
 
         results = []
         updated = 0

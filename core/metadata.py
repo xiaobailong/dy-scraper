@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from common.logger import log
+from api.douyin_user import USER_PROFILE_API_SCRIPT
 
 
 # ============================================================
@@ -453,47 +454,7 @@ async () => {
     // ========================================
     // 策略5: 通过 sec_uid 调用用户信息 API 获取抖音号
     // ========================================
-    if (!result.authorCode && result.secUid && result.secUid !== 'self') {
-        try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 8000);
-            const resp = await fetch(
-                `/aweme/v1/web/user/profile/other/?sec_user_id=${encodeURIComponent(result.secUid)}`,
-                {
-                    signal: controller.signal,
-                    headers: {
-                        'referer': window.location.href,
-                        'accept': 'application/json',
-                    },
-                    credentials: 'include',
-                }
-            );
-            clearTimeout(timeout);
-            if (resp.ok) {
-                const data = await resp.json();
-                const found = deepFind(data);
-                if (found) {
-                    if (!result.authorCode && found.unique_id) result.authorCode = found.unique_id;
-                    if (!result.authorCode && found.short_id) result.authorCode = found.short_id;
-                    if (!result.author && found.nickname) result.author = found.nickname;
-                    if (result.authorCode) result.extractSource = 'api:user_profile';
-                }
-                // 如果 deepFind 没找到，直接从顶层 user 对象取
-                if (!result.authorCode && data.user) {
-                    const u = data.user;
-                    if (u.unique_id && typeof u.unique_id === 'string') result.authorCode = u.unique_id;
-                    else if (u.short_id) {
-                        const sid = typeof u.short_id === 'string' ? u.short_id : String(u.short_id);
-                        if (sid && sid !== '0') result.authorCode = sid;
-                    }
-                    if (result.authorCode) result.extractSource = 'api:user_profile_direct';
-                }
-            }
-        } catch(e) {
-            result._apiError = (e.message || '').substring(0, 100);
-        }
-    }
-
+""" + USER_PROFILE_API_SCRIPT + r"""
     // ========================================
     // 通用: meta description
     // ========================================
