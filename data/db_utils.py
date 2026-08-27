@@ -72,6 +72,7 @@ class DBUtils:
         self._init_table()
         self._init_skipped_table()
         self._init_config_table()
+        self._init_cookies_table()
 
     def lock_db(self, timeout: float = 60) -> FileLock:
         """获取数据库写锁，用于阻止其他进程同时写入。返回上下文管理器。"""
@@ -121,6 +122,47 @@ class DBUtils:
                     )
                 """)
                 conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _init_cookies_table(self) -> None:
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("PRAGMA table_info(cookies)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if not columns:
+                cursor.execute("""
+                    CREATE TABLE cookies (
+                        domain TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        value TEXT DEFAULT "",
+                        secure INTEGER DEFAULT 0,
+                        http_only INTEGER DEFAULT 0,
+                        same_site TEXT DEFAULT "Lax",
+                        expires REAL DEFAULT -1,
+                        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (domain, name, path)
+                    )
+                """)
+            else:
+                for col, col_type in [
+                    ("path", "TEXT NOT NULL DEFAULT '/'"),
+                    ("secure", "INTEGER DEFAULT 0"),
+                    ("http_only", "INTEGER DEFAULT 0"),
+                    ("same_site", "TEXT DEFAULT 'Lax'"),
+                    ("expires", "REAL DEFAULT -1"),
+                    ("update_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ]:
+                    if col not in columns:
+                        try:
+                            cursor.execute(
+                                f"ALTER TABLE cookies ADD COLUMN {col} {col_type}"
+                            )
+                        except sqlite3.OperationalError:
+                            pass
+            conn.commit()
         finally:
             cursor.close()
             conn.close()
@@ -396,6 +438,81 @@ class DBUtils:
                     )
                     conn.commit()
                     return cursor.rowcount > 0
+                finally:
+                    cursor.close()
+                    conn.close()
+        return self._retry_write(_do_write)
+
+    def get_cookies(self, domain: str = ".douyin.com") -> list[dict]:
+        conn, cursor = self._connect()
+        try:
+            cursor.execute(
+                "SELECT name, value, domain, path, secure, http_only, same_site, expires "
+                "FROM cookies WHERE domain LIKE ?",
+                (f"%{domain}%",),
+            )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                cookie = {
+                    "name": row[0],
+                    "value": row[1],
+                    "domain": row[2],
+                    "path": row[3],
+                    "secure": bool(row[4]),
+                    "httpOnly": bool(row[5]),
+                    "sameSite": row[6],
+                }
+                if row[7] and row[7] > 0:
+                    cookie["expires"] = row[7]
+                result.append(cookie)
+            return result
+        finally:
+            cursor.close()
+            conn.close()
+
+    def save_cookies(self, cookies: list[dict]) -> None:
+        beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        def _do_write():
+            with self.lock_db():
+                conn, cursor = self._connect()
+                try:
+                    rows = []
+                    for c in cookies:
+                        rows.append((
+                            c.get("domain", ""),
+                            c.get("name", ""),
+                            c.get("path", "/"),
+                            c.get("value", ""),
+                            1 if c.get("secure") or c.get("Secure") else 0,
+                            1 if c.get("httpOnly") or c.get("http_only") else 0,
+                            c.get("sameSite") or c.get("same_site") or "Lax",
+                            c.get("expires") or c.get("Expires") or -1,
+                            beijing_time,
+                        ))
+                    cursor.executemany(
+                        "INSERT OR REPLACE INTO cookies "
+                        "(domain, name, path, value, secure, http_only, same_site, expires, update_time) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+                    conn.commit()
+                finally:
+                    cursor.close()
+                    conn.close()
+        self._retry_write(_do_write)
+
+    def clear_cookies(self, domain: str = ".douyin.com") -> int:
+        def _do_write() -> int:
+            with self.lock_db():
+                conn, cursor = self._connect()
+                try:
+                    cursor.execute("DELETE FROM cookies WHERE domain LIKE ?", (f"%{domain}%",))
+                    count = cursor.rowcount
+                    conn.commit()
+                    return count
                 finally:
                     cursor.close()
                     conn.close()

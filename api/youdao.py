@@ -113,30 +113,22 @@ def fetch_urls_from_youdao() -> list[str]:
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  有道云笔记 API 模块 - 调用样例")
+    print("  有道云笔记 API 模块 - 真实调用样例")
     print("=" * 60)
 
-    print("\n[1] 基本用法 - 从有道云笔记获取 URL 列表:")
-    print("""
-    from api.youdao import fetch_urls_from_youdao
-
+    # ==== 1. 真正调用 fetch_urls_from_youdao ====
+    print(f"\n[1] 调用 fetch_urls_from_youdao() 获取真实数据:")
     urls = fetch_urls_from_youdao()
     if urls:
-        print(f"获取到 {len(urls)} 个 URL:")
+        print(f"  获取到 {len(urls)} 个 URL:")
         for i, url in enumerate(urls, 1):
-            print(f"  [{i}] {url}")
+            print(f"    [{i}] {url}")
     else:
-        print("未获取到 URL")
-    """)
+        print(f"  未获取到 URL（请检查 YOUDAO_API 配置和网络）")
 
-    print("\n[2] 在 scraper.py 中的集成方式:")
-    print("""
-    # scraper.py 中作为 URL 来源之一:
-    from api.youdao import fetch_urls_from_youdao
-
-    url_source = getattr(config, "URL_SOURCE", "youdao")
-    if url_source == "youdao":
-        url_list = fetch_urls_from_youdao()
-    else:
-        url_list = fetch_urls_from_local_file(...)
-    """)
+    # ==== 2. 展示 API 端点和配置 ====
+    print(f"\n[2] API 配置信息:")
+    print(f"  YOUDAO_API = {YOUDAO_API!r}")
+    print(f"\n  在其他模块中的调用方式:")
+    print(f"    from api.youdao import fetch_urls_from_youdao")
+    print(f"    urls = fetch_urls_from_youdao()")
