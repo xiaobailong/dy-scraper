@@ -203,7 +203,7 @@ def _locked_write(file_path: str, data: bytes) -> None:
 
 
 def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple:
-    """同步下载文件，返回 (成功, 大小描述, md5)，无大小限制"""
+    """同步下载文件，返回 (成功, 大小描述, md5, 实际下载地址, 页面来源)，无大小限制"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -214,6 +214,7 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple:
 
         req = Request(url, headers=headers)
         with urlopen(req, timeout=300) as resp:
+            actual_url = resp.geturl()
             chunks = []
             total = 0
             while True:
@@ -227,11 +228,11 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple:
             md5 = hashlib.md5(data).hexdigest()
             save_path.parent.mkdir(parents=True, exist_ok=True)
             _locked_write(str(save_path), data)
-            return True, format_bytes(len(data)), md5
+            return True, format_bytes(len(data)), md5, actual_url, referer
     except Exception as e:
         if save_path.exists():
             safe_unlink(save_path)
-        return False, str(e), ""
+        return False, str(e), "", "", ""
 
 
 async def download_files(
@@ -270,9 +271,9 @@ async def download_files(
             tasks.append((i, url, final_name, final_path, task))
 
         for i, url, final_name, final_path, task in tasks:
-            success, info, md5 = await task
+            success, info, md5, actual_url, page_url = await task
             if success:
-                log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})")
+                log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})  [来源: {actual_url}]  [页面: {page_url}]")
                 results.append({
                     "name": final_name, "url": url, "path": str(final_path),
                     "size": info, "md5": md5, "status": "downloaded"
@@ -297,6 +298,7 @@ _sys.path.insert(0, str(Path(__file__).parent))
 from core.downloader import deduplicate_videos, extract_urls_from_network, sort_images_by_quality
 from core.metadata import extract_metadata
 from api.douyin_detail import create_detail_response_collector
+from data.db_utils import DBUtils
 
 
 async def process_url(target_url: str) -> None:
@@ -364,6 +366,16 @@ async def process_url(target_url: str) -> None:
 
         final_url = page.url
         log(f"  最终跳转: {final_url}")
+
+        # 长链接去重检查：检查最终跳转地址是否已被处理过
+        db = DBUtils()
+        final_info = db.get_by_final_url(final_url)
+        if final_info:
+            log(f"  ⚠️ 长链接重复（最终地址已被处理过），跳过")
+            log(f"     首次处理短链接: {final_info['short_url']}")
+            log(f"     首次处理时间: {final_info['create_time']}")
+            await browser.close()
+            return
 
         # 等待渲染
         log("[2/4] 等待页面渲染...")
@@ -434,6 +446,9 @@ async def process_url(target_url: str) -> None:
         video_fail = len([r for r in video_results if r["status"] == "failed"])
         image_ok = len([r for r in image_results if r["status"] == "downloaded"])
         image_fail = len([r for r in image_results if r["status"] == "failed"])
+
+        if video_ok > 0 or image_ok > 0:
+            db.insert_final_url(final_url, target_url)
 
         log(f"\n{'=' * 60}")
         log(f"  下载完成!")

@@ -73,6 +73,7 @@ class DBUtils:
         self._init_skipped_table()
         self._init_config_table()
         self._init_cookies_table()
+        self._init_final_url_table()
 
     def lock_db(self, timeout: float = 60) -> FileLock:
         """获取数据库写锁，用于阻止其他进程同时写入。返回上下文管理器。"""
@@ -166,6 +167,84 @@ class DBUtils:
         finally:
             cursor.close()
             conn.close()
+
+    def _init_final_url_table(self) -> None:
+        """创建长链接映射表，用于记录短链接→最终跳转地址的映射，防止同一作品被不同短链接重复处理"""
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("PRAGMA table_info(details_page_final_url)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if not columns:
+                cursor.execute("""
+                    CREATE TABLE details_page_final_url (
+                        final_url TEXT PRIMARY KEY NOT NULL,
+                        short_url TEXT DEFAULT "",
+                        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            else:
+                for col, col_type in [
+                    ("create_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ]:
+                    if col not in columns:
+                        cursor.execute(
+                            f"ALTER TABLE details_page_final_url ADD COLUMN {col} {col_type}"
+                        )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def is_final_url_exist(self, final_url: str) -> bool:
+        """检查最终跳转地址是否已被处理过"""
+        conn, cursor = self._connect()
+        try:
+            cursor.execute(
+                "SELECT 1 FROM details_page_final_url WHERE final_url=?",
+                (final_url.strip(),)
+            )
+            return cursor.fetchone() is not None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_by_final_url(self, final_url: str) -> dict | None:
+        """查询长链接的处理记录，返回 {short_url, create_time} 或 None"""
+        conn, cursor = self._connect()
+        try:
+            cursor.execute(
+                "SELECT short_url, create_time FROM details_page_final_url WHERE final_url=?",
+                (final_url.strip(),)
+            )
+            row = cursor.fetchone()
+            if row:
+                return {"short_url": row[0], "create_time": row[1]}
+            return None
+        finally:
+            cursor.close()
+            conn.close()
+
+    def insert_final_url(self, final_url: str, short_url: str = "") -> None:
+        """记录最终跳转地址与短链接的映射关系"""
+        if self.is_final_url_exist(final_url):
+            return
+        beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        def _do_write():
+            with self.lock_db():
+                conn, cursor = self._connect()
+                try:
+                    cursor.execute(
+                        "INSERT INTO details_page_final_url (final_url, short_url, create_time) "
+                        "VALUES (?, ?, ?)",
+                        (final_url.strip(), short_url.strip(), beijing_time),
+                    )
+                    conn.commit()
+                finally:
+                    cursor.close()
+                    conn.close()
+        self._retry_write(_do_write)
 
     def _init_skipped_table(self) -> None:
         """创建跳过记录表，与 details_page 结构一致，用于记录无成功下载的 URL"""

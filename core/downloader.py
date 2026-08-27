@@ -37,7 +37,7 @@ def _locked_write(file_path: str, data: bytes) -> None:
 
 
 def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bool, str, str]:
-    """同步下载文件，返回 (成功, 大小描述, md5)，超过 MAX_FILE_SIZE 自动终止"""
+    """同步下载文件，返回 (成功, 大小描述, md5, 实际下载地址, 页面来源)，超过 MAX_FILE_SIZE 自动终止"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -48,6 +48,7 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bo
 
         req = Request(url, headers=headers)
         with urlopen(req, timeout=120) as resp:
+            actual_url = resp.geturl()
             chunks = []
             total = 0
             while True:
@@ -59,7 +60,7 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bo
                     resp.close()
                     if save_path.exists():
                         safe_unlink(save_path)
-                    return False, f"超过{format_bytes(MAX_FILE_SIZE)}限制({format_bytes(total)})", ""
+                    return False, f"超过{format_bytes(MAX_FILE_SIZE)}限制({format_bytes(total)})", "", "", ""
                 chunks.append(chunk)
 
             data = b"".join(chunks)
@@ -67,12 +68,12 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bo
             save_path.parent.mkdir(parents=True, exist_ok=True)
             _locked_write(str(save_path), data)
             if not save_path.exists():
-                return False, "文件写入后消失（可能被杀毒软件拦截）", ""
-            return True, format_bytes(len(data)), md5
+                return False, "文件写入后消失（可能被杀毒软件拦截）", "", "", ""
+            return True, format_bytes(len(data)), md5, actual_url, referer
     except Exception as e:
         if save_path.exists():
             safe_unlink(save_path)
-        return False, str(e), ""
+        return False, str(e), "", "", ""
 
 
 async def download_files(
@@ -135,7 +136,7 @@ async def download_files(
             tasks.append((i, url, final_name, final_path, task))
 
         for i, url, final_name, final_path, task in tasks:
-            success, info, md5 = await task
+            success, info, md5, actual_url, page_url = await task
             if success:
                 try:
                     actual_size = final_path.stat().st_size
@@ -208,7 +209,7 @@ async def download_files(
                     else:
                         log(f"  [{i + 1}/{len(urls)}] pHash重复，保留当前(较大): {final_name} ({info})")
 
-                log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})")
+                log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})  [来源: {actual_url}]  [页面: {page_url}]")
                 results.append({
                     "name": final_name, "url": url, "path": str(final_path),
                     "size": info, "md5": md5, "status": "downloaded"

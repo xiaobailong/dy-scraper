@@ -262,6 +262,14 @@ async def main():
                 log(f"  ⚠️ 页面加载失败（状态不确定，可能混用新旧页面内容），跳过当前 URL")
                 continue
 
+            # 长链接去重检查：检查最终跳转地址是否已被其他短链接处理过
+            final_info = db.get_by_final_url(final_url)
+            if final_info:
+                log(f"  ⚠️ 长链接重复（最终地址已被处理过），跳过")
+                log(f"     首次处理短链接: {final_info['short_url']}")
+                log(f"     首次处理时间: {final_info['create_time']}")
+                continue
+
             # 异常检查：跳转前后地址相同，可能抖音拦截
             if final_url == _last_final_url:
                 log(f"  ⚠️ 跳转前后地址相同，可能未成功进入新页面，跳过")
@@ -385,6 +393,7 @@ async def main():
             # 记录到数据库：标记该 URL 已处理
             if video_count > 0 or image_count > 0:
                 db.insert(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
+                db.insert_final_url(final_url, TARGET_URL)
                 log(f"  URL已记录到数据库")
             elif video_size_skipped > 0 or image_size_skipped > 0:
                 db.insert_skipped(normalize_url(TARGET_URL), album_name=page_data["author"] or "", album_code=page_data.get("authorCode") or "", remark=page_data["title"] or "")
