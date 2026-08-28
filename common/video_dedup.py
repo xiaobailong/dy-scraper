@@ -198,7 +198,7 @@ class VideoDedupChecker:
         if not directory.exists():
             return {}
 
-        cache_path = directory / _CACHE_FILENAME
+        cache_path = directory.parent / _CACHE_FILENAME
         cache = self._load_cache(cache_path)
         updated = False
         result = {}
