@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """文件下载与网络请求提取"""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import os
@@ -8,12 +10,18 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from config import MAX_FILE_SIZE, MIN_FILE_SIZE
 from common.logger import log
-from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink, check_and_dedup_phash, check_and_dedup_video_phash, compute_video_fingerprint, is_emoji_by_dimensions
+from common.utils import clean_title, format_bytes, get_file_size, is_ui_asset, safe_unlink
+from common.image_dedup import ImageDedupChecker
+from common.video_dedup import VideoDedupChecker
+
+if TYPE_CHECKING:
+    from entity.page_context import PageContext
 
 
 def _locked_write(file_path: str, data: bytes) -> None:
@@ -77,17 +85,27 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple[bo
 
 
 async def download_files(
-    urls: list[str],
+    ctx: "PageContext",
     save_dir: Path,
-    referer: str,
     file_type: str,
-    title: str = "douyin",
-    author: str = "",
     max_workers: int = 5,
     md5_registry: set[str] | None = None,
     video_hash_registry: dict[str, list[str]] | None = None,
 ) -> list[dict]:
-    """异步下载多个文件，文件命名为 {author}_{title}_{时间}_{idx}.{ext}，通过 MD5 去重，直接下载到最终路径"""
+    """异步下载文件，通过 MD5 和 pHash 去重。
+
+    Args:
+        ctx: 页面上下文，读取 urls/final_url/title/author，写入 results
+        save_dir: 保存目录
+        file_type: "video" 或 "image"
+        max_workers: 并发下载线程数
+        md5_registry: 全局 MD5 去重注册表
+        video_hash_registry: 全局视频 pHash 去重注册表
+
+    Returns:
+        下载结果列表（同时写入 ctx.video_results 或 ctx.image_results）
+    """
+    urls = ctx.video_urls if file_type == "video" else ctx.image_urls
     if not urls:
         return []
 
@@ -99,9 +117,13 @@ async def download_files(
     save_dir.mkdir(parents=True, exist_ok=True)
     results = []
     loop = asyncio.get_running_loop()
-    safe_title = clean_title(title)
-    safe_author = clean_title(author) if author else ""
+    safe_title = clean_title(ctx.title)
+    safe_author = clean_title(ctx.author) if ctx.author else ""
     download_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    referer = ctx.final_url
+
+    image_dedup = ImageDedupChecker()
+    video_dedup = VideoDedupChecker()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         tasks = []
@@ -169,7 +191,7 @@ async def download_files(
 
                 # 视频下载后检查：pHash 相似度去重（不同码率/编码的同一视频）
                 if file_type == "video":
-                    if check_and_dedup_video_phash(final_path, video_hash_registry):
+                    if video_dedup.check_and_dedup(final_path, video_hash_registry):
                         # 当前文件被删除（是重复且较小）
                         if not final_path.exists():
                             log(f"  [{i + 1}/{len(urls)}] 删除 (视频pHash重复-较小): {final_name} ({info})")
@@ -181,14 +203,14 @@ async def download_files(
                         else:
                             # 已有文件被删除，当前文件保留
                             log(f"  [{i + 1}/{len(urls)}] 视频pHash重复，保留当前(较大): {final_name} ({info})")
-                    # 将当前视频指纹加入注册表（无论是新视频还是替换了旧视频）
+                    # 将当前视频指纹加入注册表
                     if final_path.exists():
-                        fingerprint = compute_video_fingerprint(final_path)
+                        fingerprint = video_dedup.compute_fingerprint(final_path)
                         if fingerprint:
                             video_hash_registry[final_name] = fingerprint
 
                 # 图片下载后检查：表情包尺寸过滤
-                if file_type == "image" and is_emoji_by_dimensions(final_path):
+                if file_type == "image" and image_dedup.is_emoji_by_dimensions(final_path):
                     safe_unlink(final_path)
                     log(f"  [{i + 1}/{len(urls)}] 删除 (表情包): {final_name} ({info})")
                     results.append({
@@ -198,7 +220,7 @@ async def download_files(
                     continue
 
                 # 图片下载后检查：pHash 相似度去重
-                if file_type == "image" and check_and_dedup_phash(final_path, save_dir):
+                if file_type == "image" and image_dedup.check_and_dedup(final_path, save_dir):
                     if not final_path.exists():
                         log(f"  [{i + 1}/{len(urls)}] 删除 (pHash重复-较小): {final_name} ({info})")
                         results.append({
@@ -263,11 +285,17 @@ def extract_urls_from_network(requests: list) -> tuple[list[str], list[str]]:
 
 
 def deduplicate_videos(urls: list[str]) -> list[str]:
-    """对视频去重：同一 file_id 只保留最高码率，按质量降序排列"""
+    """对视频去重：同一 file_id 只保留最高码率，按质量降序排列
+
+    通过提取 URL 路径中最后一个非空段作为 file_id 来分组。
+    兼容两种格式：
+      /path/to/video_id?param=value     （无末尾斜杠）
+      /path/to/video_id/?param=value    （有末尾斜杠，抖音常用格式）
+    """
     groups = {}
     for url in urls:
         br_match = re.search(r'[?&]br=(\d+)', url)
-        file_match = re.search(r'/([^/]+)\?', url)
+        file_match = re.search(r'/([^/?]+)(?:/)?\?', url)
         key = file_match.group(1) if file_match else url
         br = int(br_match.group(1)) if br_match else 0
         if key not in groups or br > groups[key][1]:

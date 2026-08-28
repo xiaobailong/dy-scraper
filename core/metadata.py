@@ -22,6 +22,7 @@ from typing import Any
 
 from common.logger import log
 from api.douyin_user import USER_PROFILE_API_SCRIPT
+from entity.page_context import PageContext
 
 
 # ============================================================
@@ -1032,20 +1033,21 @@ def _is_sufficient(found: dict) -> bool:
 # 主入口: 组合浏览器端 + Python 端提取
 # ============================================================
 
-async def extract_metadata(page, detail_responses: list) -> dict:
+async def extract_metadata(page, detail_responses: list, ctx: PageContext = None) -> PageContext:
     """
     从页面中提取元数据，组合浏览器端 JS 和 Python 端 API 解析。
 
-    返回:
-        {
-            title, author, authorCode, secUid, description,
-            videoUrls, imageUrls, coverUrl, pageUrl, extractSource,
-            ssrAvailable, apiResponseCount,
-            apiVideoUrls, apiImageUrls  # 新增: API 高清链接
-        }
+    接受 PageContext，将提取结果直接填充到 ctx 中，确保数据原子性。
+    返回 ctx（链式调用友好）。
     """
+    if ctx is None:
+        ctx = PageContext()
+
     page_data = await page.evaluate(EXTRACT_SCRIPT)
-    page_data["apiResponseCount"] = len(detail_responses)
+    ctx.api_response_count = len(detail_responses)
+    ctx.ssr_available = page_data.get("ssrAvailable", []) or []
+    if page_data.get("_apiError"):
+        ctx.debug_info["_apiError"] = page_data["_apiError"]
 
     if page_data.get("extractSource"):
         log(f"  浏览器提取来源: {page_data['extractSource']}, SSR可用: {page_data.get('ssrAvailable', [])}", "debug")
@@ -1061,7 +1063,7 @@ async def extract_metadata(page, detail_responses: list) -> dict:
     # 用 Playwright 调用用户信息 API 获取准确值
     extract_source = page_data.get("extractSource", "")
     code_from_dom = extract_source in _UNRELIABLE_SOURCES
-    author_from_dom = code_from_dom  # 同样，author 名字也可能不准
+    author_from_dom = code_from_dom
     needs_api_code = (not page_data.get("authorCode")) or code_from_dom
     needs_api_author = (not page_data.get("author")) or author_from_dom
     if (needs_api_code or needs_api_author) and page_data.get("secUid") and page_data["secUid"] != "self":
@@ -1095,7 +1097,21 @@ async def extract_metadata(page, detail_responses: list) -> dict:
     if page_data.get("authorCode") and not page_data.get("extractSource", "").startswith("api"):
         log(f"  API响应补充提取成功: {page_data.get('authorCode')}", "debug")
 
-    return page_data
+    # ── 填充 PageContext ──
+    ctx.final_url = page_data.get("pageUrl", "") or current_page_url
+    ctx.title = page_data.get("title", "") or ""
+    ctx.author = page_data.get("author", "") or ""
+    ctx.author_code = page_data.get("authorCode", "") or ""
+    ctx.sec_uid = page_data.get("secUid", "") or ""
+    ctx.description = page_data.get("description", "") or ""
+    ctx.cover_url = page_data.get("coverUrl", "") or ""
+    ctx.extract_source = page_data.get("extractSource", "") or ""
+    ctx.dom_video_urls = page_data.get("videoUrls", []) or []
+    ctx.dom_image_urls = page_data.get("imageUrls", []) or []
+    ctx.api_video_urls = page_data.get("apiVideoUrls", []) or []
+    ctx.api_image_urls = page_data.get("apiImageUrls", []) or []
+
+    return ctx
 
 
 async def _fetch_user_info_by_secuid(page, sec_uid: str) -> dict | None:

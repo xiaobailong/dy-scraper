@@ -236,24 +236,23 @@ def download_file_sync(url: str, save_path: Path, referer: str = "") -> tuple:
 
 
 async def download_files(
-    urls: list,
+    ctx: "PageContext",
     save_dir: Path,
-    referer: str,
     file_type: str,
-    title: str = "douyin",
-    author: str = "",
     max_workers: int = 5,
 ) -> list:
     """异步下载多个文件，无大小限制，直接下载到最终路径"""
+    urls = ctx.video_urls if file_type == "video" else ctx.image_urls
     if not urls:
         return []
 
     save_dir.mkdir(parents=True, exist_ok=True)
     results = []
     loop = asyncio.get_running_loop()
-    safe_title = clean_title(title)
-    safe_author = clean_title(author) if author else ""
+    safe_title = clean_title(ctx.title)
+    safe_author = clean_title(ctx.author) if ctx.author else ""
     download_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    referer = ctx.final_url
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         tasks = []
@@ -297,6 +296,7 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).parent))
 from core.downloader import deduplicate_videos, extract_urls_from_network, sort_images_by_quality
 from core.metadata import extract_metadata
+from entity.page_context import PageContext
 from api.douyin_detail import create_detail_response_collector
 from data.db_utils import DBUtils
 
@@ -354,9 +354,6 @@ async def process_url(target_url: str) -> None:
             "contentLength": r.headers.get("content-length"),
         }))
 
-        _req_start = len(collected_requests)
-        _detail_start = len(detail_responses)
-
         # 访问页面
         log("\n[1/4] 访问目标页面...")
         try:
@@ -367,7 +364,11 @@ async def process_url(target_url: str) -> None:
         final_url = page.url
         log(f"  最终跳转: {final_url}")
 
-        # 长链接去重检查：检查最终跳转地址是否已被处理过
+        # 【关键修复】在 goto() 完成后才设置切片起点，防止上一页面的 pending 响应混入
+        _req_start = len(collected_requests)
+        _detail_start = len(detail_responses)
+
+        # 长链接去重检查
         db = DBUtils()
         final_info = db.get_by_final_url(final_url)
         if final_info:
@@ -386,74 +387,69 @@ async def process_url(target_url: str) -> None:
             log("  未检测到视频元素，继续...")
         await asyncio.sleep(5)
 
+        # ── 创建页面上下文 ──
+        ctx = PageContext(short_url=target_url, final_url=final_url)
+
         # 提取数据
         log("[3/4] 提取页面数据...")
         _new_detail = detail_responses[_detail_start:]
-        page_data = await extract_metadata(page, _new_detail)
+        ctx = await extract_metadata(page, _new_detail, ctx)
 
         _new_requests = collected_requests[_req_start:]
-        network_video_urls, network_image_urls = extract_urls_from_network(_new_requests)
+        ctx.network_video_urls, ctx.network_image_urls = extract_urls_from_network(_new_requests)
 
-        api_videos = page_data.get("apiVideoUrls") or []
-        api_images = page_data.get("apiImageUrls") or []
-        dom_videos = page_data.get("videoUrls") or []
-        dom_images = page_data.get("imageUrls") or []
-
-        if api_videos:
-            log(f"  API获取到 {len(api_videos)} 个视频链接（高清），优先使用")
-            all_video_urls = deduplicate_videos(list(dict.fromkeys(api_videos)))
+        if ctx.api_video_urls:
+            log(f"  API获取到 {len(ctx.api_video_urls)} 个视频链接（高清），优先使用")
+            all_video_urls = deduplicate_videos(list(dict.fromkeys(ctx.api_video_urls)))
         else:
             log(f"  API未获取到视频链接，退到DOM+网络请求")
-            all_video_urls = list(dict.fromkeys(dom_videos + network_video_urls))
+            all_video_urls = list(dict.fromkeys(ctx.dom_video_urls + ctx.network_video_urls))
             all_video_urls = deduplicate_videos(all_video_urls)
 
         all_video_urls = [u for u in all_video_urls if not u.startswith("blob:")]
 
-        if api_images:
-            log(f"  API/SSR获取到 {len(api_images)} 个图片链接，优先使用")
-            all_image_urls = list(dict.fromkeys(api_images))
+        if ctx.api_image_urls:
+            log(f"  API/SSR获取到 {len(ctx.api_image_urls)} 个图片链接，优先使用")
+            all_image_urls = list(dict.fromkeys(ctx.api_image_urls))
             all_image_urls = sort_images_by_quality(all_image_urls)
         else:
             log(f"  API/SSR均未获取到图片链接，退到DOM+网络请求")
-            all_image_urls = list(dict.fromkeys(dom_images + network_image_urls))
+            all_image_urls = list(dict.fromkeys(ctx.dom_image_urls + ctx.network_image_urls))
             all_image_urls = sort_images_by_quality(all_image_urls)
 
         all_image_urls = [u for u in all_image_urls if not u.startswith("blob:")]
 
-        author_info = page_data['author'] or '(未获取到)'
-        if page_data.get('authorCode'):
-            author_info += f"  (@{page_data['authorCode']})"
-        log(f"\n【页面标题】{page_data['title'] or '(未获取到)'}")
+        ctx.video_urls = all_video_urls
+        ctx.image_urls = all_image_urls
+
+        author_info = ctx.author or '(未获取到)'
+        if ctx.author_code:
+            author_info += f"  (@{ctx.author_code})"
+        log(f"\n【页面标题】{ctx.title or '(未获取到)'}")
         log(f"【作者】{author_info}")
-        log(f"【视频】{len(all_video_urls)} 个  【图片】{len(all_image_urls)} 个")
+        log(f"【视频】{len(ctx.video_urls)} 个  【图片】{len(ctx.image_urls)} 个")
 
         # 下载
         log(f"\n[4/4] 下载文件（无大小限制）...")
         log(f"  视频目录: {VIDEO_DIR}")
-        video_results = await download_files(
-            all_video_urls, VIDEO_DIR, final_url, "video",
-            title=page_data["title"], author=page_data["author"]
-        )
+        ctx.video_results = await download_files(ctx, VIDEO_DIR, "video")
 
         log(f"  图片目录: {IMAGE_DIR}")
-        image_results = await download_files(
-            all_image_urls, IMAGE_DIR, final_url, "image",
-            title=page_data["title"], author=page_data["author"], max_workers=8
-        )
+        ctx.image_results = await download_files(ctx, IMAGE_DIR, "image", max_workers=8)
 
         # 统计
-        video_ok = len([r for r in video_results if r["status"] == "downloaded"])
-        video_fail = len([r for r in video_results if r["status"] == "failed"])
-        image_ok = len([r for r in image_results if r["status"] == "downloaded"])
-        image_fail = len([r for r in image_results if r["status"] == "failed"])
+        video_ok = len([r for r in ctx.video_results if r["status"] == "downloaded"])
+        video_fail = len([r for r in ctx.video_results if r["status"] == "failed"])
+        image_ok = len([r for r in ctx.image_results if r["status"] == "downloaded"])
+        image_fail = len([r for r in ctx.image_results if r["status"] == "failed"])
 
         if video_ok > 0 or image_ok > 0:
             db.insert_final_url(final_url, target_url)
 
         log(f"\n{'=' * 60}")
         log(f"  下载完成!")
-        log(f"  视频: 成功 {video_ok}/{len(all_video_urls)}, 失败 {video_fail}")
-        log(f"  图片: 成功 {image_ok}/{len(all_image_urls)}, 失败 {image_fail}")
+        log(f"  视频: 成功 {video_ok}/{len(ctx.video_urls)}, 失败 {video_fail}")
+        log(f"  图片: 成功 {image_ok}/{len(ctx.image_urls)}, 失败 {image_fail}")
         log(f"  保存位置: {DOWNLOAD_DIR}")
         log(f"{'=' * 60}")
 
