@@ -252,6 +252,7 @@ def extract_urls_from_network(requests: list) -> tuple[list[str], list[str]]:
     """从网络请求中提取视频和图片 URL"""
     video_exts = {".mp4", ".m3u8", ".ts", ".webm", ".mov", ".flv", ".avi", ".mkv"}
     image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico"}
+    audio_exts = {".mp3", ".wav", ".aac", ".ogg", ".m4a", ".flac", ".wma", ".opus"}
     video_mimes = {"video/", "application/vnd.apple.mpegurl", "application/x-mpegURL"}
     image_mimes = {"image/"}
 
@@ -266,6 +267,10 @@ def extract_urls_from_network(requests: list) -> tuple[list[str], list[str]]:
         if url.startswith("data:") or "1x1" in url:
             continue
         if is_ui_asset(url):
+            continue
+
+        is_audio = any(ext in url_lower for ext in audio_exts)
+        if is_audio:
             continue
 
         is_video = any(ext in url_lower for ext in video_exts)

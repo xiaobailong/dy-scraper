@@ -193,8 +193,11 @@ class UrlProcessor:
             all_video_urls = list(dict.fromkeys(ctx.dom_video_urls + ctx.network_video_urls))
             all_video_urls = deduplicate_videos(all_video_urls)
 
+        _audio_exts = {".mp3", ".wav", ".aac", ".ogg", ".m4a", ".flac", ".wma", ".opus"}
         all_video_urls = [u for u in all_video_urls
-                          if not u.startswith("blob:") and not is_ui_asset(u)]
+                          if not u.startswith("blob:")
+                          and not is_ui_asset(u)
+                          and not any(u.lower().endswith(ext) or f"{ext}?" in u.lower() for ext in _audio_exts)]
 
         if ctx.api_image_urls:
             log(f"  API/SSR获取到 {len(ctx.api_image_urls)} 个图片链接，优先使用")
