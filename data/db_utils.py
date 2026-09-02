@@ -18,6 +18,65 @@ class FileLock:
         self.timeout = timeout
         self._acquired = False
 
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """判断指定 PID 的进程是否仍在运行（跨平台，无需额外依赖）。
+
+        Windows 上 os.kill(pid, 0) 的行为：
+          - 进程存在且有权限 → 正常返回
+          - 进程存在但无权限访问（如 System 进程）→ PermissionError → 视为存活
+          - 进程不存在 → OSError(winerror=11) → 视为已退出
+        """
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError as e:
+            winerr = getattr(e, "winerror", None)
+            if winerr is not None:
+                return winerr != 11
+            errno = getattr(e, "errno", None)
+            if errno is not None and errno in (3, 8):
+                return False
+            return True
+        return True
+
+    def _read_lock_info(self) -> tuple[int | None, float | None]:
+        """读取锁文件内容，返回 (pid, timestamp)；读不到返回 (None, None)"""
+        try:
+            with open(self.lock_file, "rb") as f:
+                raw = f.read().decode(errors="ignore").strip()
+            if not raw:
+                return None, None
+            lines = raw.splitlines()
+            pid = int(lines[0]) if lines and lines[0].isdigit() else None
+            ts = float(lines[1]) if len(lines) > 1 and lines[1] else None
+            return pid, ts
+        except (FileNotFoundError, PermissionError, ValueError, OSError):
+            return None, None
+
+    def _try_unlink_with_retry(self, max_wait: float = 5.0) -> bool:
+        """尝试删除锁文件，带重试（应对网盘同步进程短暂占用句柄的情况）。返回是否成功删除。"""
+        deadline = time.time() + max_wait
+        attempt = 0
+        while True:
+            try:
+                os.unlink(self.lock_file)
+                return True
+            except FileNotFoundError:
+                return True
+            except PermissionError:
+                if time.time() >= deadline:
+                    return False
+                time.sleep(0.2 + min(attempt * 0.1, 0.5))
+                attempt += 1
+            except OSError:
+                return False
+
     def acquire(self) -> bool:
         """尝试获取锁，支持超时"""
         start = time.time()
@@ -36,23 +95,27 @@ class FileLock:
 
     def release(self):
         if self._acquired:
-            try:
-                os.unlink(self.lock_file)
-            except (FileNotFoundError, PermissionError):
-                pass
+            self._try_unlink_with_retry(max_wait=8.0)
             self._acquired = False
 
     def _cleanup_stale(self):
-        """清理僵死锁文件（超过 120 秒未释放视为僵死）"""
+        """清理僵死锁文件：
+        1. 锁中记录的 PID 已不存在 → 立即清理
+        2. 锁文件修改时间超过 120 秒 → 视为僵死清理
+        """
         try:
             mtime = os.path.getmtime(self.lock_file)
-            if time.time() - mtime > 120:
-                try:
-                    os.unlink(self.lock_file)
-                except (FileNotFoundError, PermissionError):
-                    pass
         except FileNotFoundError:
-            pass
+            return
+        except OSError:
+            return
+
+        pid, _ = self._read_lock_info()
+        stale_by_pid = pid is not None and not self._pid_alive(pid)
+        stale_by_time = time.time() - mtime > 120
+
+        if stale_by_pid or stale_by_time:
+            self._try_unlink_with_retry(max_wait=3.0)
 
     def __enter__(self):
         if not self.acquire():
