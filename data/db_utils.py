@@ -38,7 +38,7 @@ class FileLock:
         if self._acquired:
             try:
                 os.unlink(self.lock_file)
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
                 pass
             self._acquired = False
 
@@ -49,7 +49,7 @@ class FileLock:
             if time.time() - mtime > 120:
                 try:
                     os.unlink(self.lock_file)
-                except FileNotFoundError:
+                except (FileNotFoundError, PermissionError):
                     pass
         except FileNotFoundError:
             pass
