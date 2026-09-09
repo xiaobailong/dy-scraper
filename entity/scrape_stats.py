@@ -8,8 +8,6 @@
 from dataclasses import dataclass, field
 
 from common.logger import log
-from common.utils import format_bytes
-from config import MAX_FILE_SIZE, MIN_FILE_SIZE
 
 
 # 下载状态 → 统计分类的映射
@@ -81,35 +79,9 @@ class ScrapeStats:
         log(f"  全部完成! 共处理 {self.url_total} 个 URL")
         log(f"{'=' * 60}")
 
-        # 视频统计
-        log(f"\n  ┌─ 视频下载统计 ─────────────────────────────")
-        log(f"  │  总计: {vs.total} 个")
-        log(f"  │  成功: {vs.success} 个")
-        log(f"  │  失败: {vs.failed} 个")
-        if vs.skipped_small:
-            log(f"  │  跳过(小于{format_bytes(MIN_FILE_SIZE)}): {vs.skipped_small} 个")
-        if vs.skipped_large:
-            log(f"  │  跳过(超过{format_bytes(MAX_FILE_SIZE)}): {vs.skipped_large} 个")
-        if vs.skipped_dup:
-            log(f"  │  跳过(MD5重复): {vs.skipped_dup} 个")
-        if vs.skipped_phash_dup:
-            log(f"  │  跳过(视频pHash重复): {vs.skipped_phash_dup} 个")
-        log(f"  └──────────────────────────────────────────")
-
-        # 图片统计
-        log(f"\n  ┌─ 图片下载统计 ─────────────────────────────")
-        log(f"  │  总计: {im.total} 个")
-        log(f"  │  成功: {im.success} 个")
-        log(f"  │  失败: {im.failed} 个")
-        if im.skipped_small:
-            log(f"  │  跳过(小于{format_bytes(MIN_FILE_SIZE)}): {im.skipped_small} 个")
-        if im.skipped_large:
-            log(f"  │  跳过(超过{format_bytes(MAX_FILE_SIZE)}): {im.skipped_large} 个")
-        if im.skipped_dup:
-            log(f"  │  跳过(MD5重复): {im.skipped_dup} 个")
-        log(f"  └──────────────────────────────────────────")
-
         # 汇总
+        vs_skipped = vs.skipped_small + vs.skipped_large + vs.skipped_dup + vs.skipped_phash_dup
+        im_skipped = im.skipped_small + im.skipped_large + im.skipped_dup
         total_urls = self.url_total + self.skipped_url_count
         log(f"\n  ┌─ 汇总 ────────────────────────────────────")
         log(f"  │  URL 总数: {total_urls} 个")
@@ -117,10 +89,10 @@ class ScrapeStats:
         if self.skipped_url_count:
             log(f"  │  跳过(已处理URL): {self.skipped_url_count} 个")
         log(f"  │  有成功下载的 URL: {self.urls_with_downloads} 个")
-        log(f"  │  文件总数: {vs.total + im.total} 个")
-        log(f"  │  下载成功: {total_success} 个")
-        log(f"  │  下载失败: {total_failed} 个")
-        log(f"  │  跳过(文件): {total_skipped} 个")
+        log(f"  │  文件总数: {vs.total + im.total} 个 (视频 {vs.total}, 图片 {im.total})")
+        log(f"  │  下载成功: {total_success} 个 (视频 {vs.success}, 图片 {im.success})")
+        log(f"  │  下载失败: {total_failed} 个 (视频 {vs.failed}, 图片 {im.failed})")
+        log(f"  │  跳过(文件): {total_skipped} 个 (视频 {vs_skipped}, 图片 {im_skipped})")
         log(f"  └──────────────────────────────────────────")
         log(f"{'=' * 60}")
 
