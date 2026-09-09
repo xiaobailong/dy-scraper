@@ -6,7 +6,11 @@
 """
 
 import asyncio
+import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
 from config import (
     RESULT_DIR,
@@ -36,7 +40,7 @@ def _fetch_urls() -> tuple[list[str], int, str]:
     else:
         from data.local_file import git_pull, fetch_urls_from_local_file
         git_pull()
-        default_local_file = Path(__file__).parent / "data" / "tmp.txt"
+        default_local_file = Path(__file__).parent.parent / "src" / "data" / "tmp.txt"
         if default_local_file.exists():
             url_list = fetch_urls_from_local_file(str(default_local_file))
         else:

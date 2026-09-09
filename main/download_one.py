@@ -293,7 +293,7 @@ async def download_files(
 # 从 core 模块导入提取逻辑
 # ============================================================
 import sys as _sys
-_sys.path.insert(0, str(Path(__file__).parent))
+_sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from core.downloader import deduplicate_videos, extract_urls_from_network, sort_images_by_quality
 from core.metadata import extract_metadata
 from entity.page_context import PageContext

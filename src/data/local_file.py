@@ -64,7 +64,7 @@ def fetch_urls_from_local_file(file_path: str) -> list[str]:
 
 def git_pull() -> None:
     """执行 git pull 拉取最新代码"""
-    project_dir = Path(__file__).parent.parent
+    project_dir = Path(__file__).parent.parent.parent
     log("  执行 git pull...")
     try:
         result = subprocess.run(
@@ -82,7 +82,7 @@ def git_pull() -> None:
 
 def clear_tmp_and_git_commit_push() -> None:
     """清空 tmp.txt 并执行 git add、git commit、git push 提交整个项目"""
-    project_dir = Path(__file__).parent.parent
+    project_dir = Path(__file__).parent.parent.parent
 
     # 1. 清空 tmp.txt
     tmp_file = Path(__file__).parent / "tmp.txt"

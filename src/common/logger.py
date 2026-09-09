@@ -58,7 +58,7 @@ class DailyRotatingFileHandler(logging.Handler):
 def setup_logger(name: str = "dy-scraper", log_dir: Path = None) -> logging.Logger:
     """配置并返回 logger，同时输出到控制台和按天滚动的日志文件"""
     if log_dir is None:
-        log_dir = Path(__file__).parent.parent / "logs"
+        log_dir = Path(__file__).parent.parent.parent / "logs"
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)

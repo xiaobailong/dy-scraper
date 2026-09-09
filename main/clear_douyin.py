@@ -3,6 +3,8 @@ import os
 import sys
 from ctypes import wintypes
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
+
 from config import RESULT_DIR
 
 # Windows Shell API
