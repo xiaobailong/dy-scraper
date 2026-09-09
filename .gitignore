@@ -14,6 +14,7 @@ logs/
 # IDE
 .vscode/
 .idea/
+.trae/
 
 # 下载目录
 douyin/
