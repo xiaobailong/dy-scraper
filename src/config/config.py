@@ -18,6 +18,7 @@ _TYPE_CONVERTERS = {
     "UI_ASSET_DOMAINS": lambda v: set(json.loads(v)),
     "LOCAL_URL_FILE": Path,
     "FFMPEG_BIN_DIR": Path,
+    "DOUYIN_DIR": Path,
 }
 
 _loaded = False

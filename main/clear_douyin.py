@@ -5,7 +5,7 @@ from ctypes import wintypes
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
-from config import RESULT_DIR
+from config import DOUYIN_DIR
 
 # Windows Shell API
 shell32 = ctypes.windll.shell32
@@ -40,7 +40,8 @@ def send_to_recycle_bin(path: str) -> bool:
     file_op = SHFILEOPSTRUCTW()
     file_op.hwnd = 0
     file_op.wFunc = FO_DELETE
-    file_op.pFrom = path + "\0\0"
+    buf = ctypes.create_unicode_buffer(path + "\0")
+    file_op.pFrom = ctypes.cast(buf, wintypes.LPCWSTR)
     file_op.pTo = None
     file_op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT
     file_op.fAnyOperationsAborted = False
@@ -82,6 +83,4 @@ def clear_directory(target_dir: str) -> None:
 
 
 if __name__ == "__main__":
-    import config
-    config.reload_config()
-    clear_directory(str(RESULT_DIR))
+    clear_directory(str(DOUYIN_DIR))
