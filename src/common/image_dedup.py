@@ -98,7 +98,10 @@ class ImageDedupChecker:
         for existing in directory.iterdir():
             if not existing.is_file():
                 continue
-            if existing.samefile(file_path):
+            try:
+                if existing.samefile(file_path):
+                    continue
+            except (FileNotFoundError, OSError):
                 continue
             if existing.suffix.lower() not in _IMAGE_EXTENSIONS:
                 continue
@@ -114,7 +117,11 @@ class ImageDedupChecker:
                 continue
 
             if dist <= hamming_threshold:
-                if current_size >= existing.stat().st_size:
+                try:
+                    existing_size = existing.stat().st_size
+                except (FileNotFoundError, OSError):
+                    continue
+                if current_size >= existing_size:
                     from common.utils import safe_unlink
                     safe_unlink(existing)
                     return False
