@@ -63,7 +63,8 @@ def _fetch_urls() -> tuple[list[str], int, str]:
         sinfo = db.get_skipped_info(u)
         if sinfo:
             skipped_count += 1
-            log(f"  跳过(无内容): {u}  (处理时间: {sinfo['create_time']}, 标题: {sinfo['album_name']})", "debug")
+            reason_info = f" 原因: {sinfo.get('skip_reason', '')}" if sinfo.get('skip_reason') else ""
+            log(f"  跳过(无内容): {u}  (处理时间: {sinfo['create_time']}, 标题: {sinfo['album_name']}{reason_info})", "debug")
             continue
         new_urls.append(u)
 

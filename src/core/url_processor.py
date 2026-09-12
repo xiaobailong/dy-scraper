@@ -82,10 +82,19 @@ class UrlProcessor:
 
         if not goto_ok:
             log(f"  ⚠️ 页面加载失败，跳过当前 URL")
+            self._db.insert_skipped(
+                normalize_url(target_url),
+                skip_reason="页面加载失败",
+            )
             return None, last_final_url or ""
 
         # ── 2. 校验 ──
-        if not self._validate_url(final_url, last_final_url):
+        valid, skip_reason = self._validate_url(final_url, last_final_url)
+        if not valid:
+            self._db.insert_skipped(
+                normalize_url(target_url),
+                skip_reason=skip_reason,
+            )
             return None, last_final_url or ""
 
         # 【关键修复】goto() 完成后才设置切片起点，防止跨页面请求污染
@@ -164,24 +173,24 @@ class UrlProcessor:
     # 内部方法
     # ──────────────────────────────────────────────
 
-    def _validate_url(self, final_url: str, last_final_url: str | None) -> bool:
-        """校验 final_url 是否可用"""
+    def _validate_url(self, final_url: str, last_final_url: str | None) -> tuple[bool, str]:
+        """校验 final_url 是否可用，返回 (是否有效, 跳过原因)"""
         final_info = self._db.get_by_final_url(final_url)
         if final_info:
             log(f"  ⚠️ 长链接重复（最终地址已被处理过），跳过")
             log(f"     首次处理短链接: {final_info['short_url']}")
             log(f"     首次处理时间: {final_info['create_time']}")
-            return False
+            return False, "长链接重复（最终地址已被处理过）"
 
         if last_final_url and final_url == last_final_url:
             log(f"  ⚠️ 跳转前后地址相同，可能未成功进入新页面，跳过")
-            return False
+            return False, "跳转地址相同（未成功进入新页面）"
 
         if any(s in final_url for s in ("/notfound", "/404", "/about:blank", "/error")):
             log(f"  ⚠️ 目标页面不存在（{final_url}），跳过")
-            return False
+            return False, "目标页面不存在"
 
-        return True
+        return True, ""
 
     def _merge_urls(self, ctx: PageContext) -> None:
         """合并视频/图片 URL（优先级：API > SSR > DOM > 网络请求）"""
@@ -233,7 +242,24 @@ class UrlProcessor:
                 album_name=ctx.author or "",
                 album_code=ctx.author_code or "",
                 remark=ctx.title or "",
+                skip_reason="文件过大（所有媒体文件均超过大小限制）",
             )
             log(f"  URL记录到跳过表（有{ctx.total_url_count}个媒体URL但均因大小被跳过）")
+        elif ctx.has_media_urls:
+            self._db.insert_skipped(
+                normalize_url(target_url),
+                album_name=ctx.author or "",
+                album_code=ctx.author_code or "",
+                remark=ctx.title or "",
+                skip_reason="文件重复（所有媒体文件MD5/pHash重复或下载失败）",
+            )
+            log(f"  URL记录到跳过表（有{ctx.total_url_count}个媒体URL但均因重复/失败被跳过）")
         else:
-            log(f"  URL未记录（无媒体URL）")
+            self._db.insert_skipped(
+                normalize_url(target_url),
+                album_name=ctx.author or "",
+                album_code=ctx.author_code or "",
+                remark=ctx.title or "",
+                skip_reason="无媒体URL",
+            )
+            log(f"  URL记录到跳过表（无媒体URL）")

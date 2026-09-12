@@ -322,6 +322,7 @@ class DBUtils:
                         album_name TEXT DEFAULT "",
                         album_code TEXT DEFAULT "",
                         remark TEXT DEFAULT "",
+                        skip_reason TEXT DEFAULT "",
                         create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -331,6 +332,7 @@ class DBUtils:
                     ("create_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("update_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("album_code", "TEXT DEFAULT ''"),
+                    ("skip_reason", "TEXT DEFAULT ''"),
                 ]:
                     if col not in columns:
                         cursor.execute(
@@ -475,18 +477,18 @@ class DBUtils:
         conn, cursor = self._connect()
         try:
             cursor.execute(
-                "SELECT album_name, album_code, create_time FROM details_page_skipped WHERE url=?",
+                "SELECT album_name, album_code, create_time, skip_reason FROM details_page_skipped WHERE url=?",
                 (url.strip(),)
             )
             row = cursor.fetchone()
             if row:
-                return {"album_name": row[0], "album_code": row[1], "create_time": row[2]}
+                return {"album_name": row[0], "album_code": row[1], "create_time": row[2], "skip_reason": row[3]}
             return None
         finally:
             cursor.close()
             conn.close()
 
-    def insert_skipped(self, url: str, album_name: str = "", album_code: str = "", remark: str = "") -> None:
+    def insert_skipped(self, url: str, album_name: str = "", album_code: str = "", remark: str = "", skip_reason: str = "") -> None:
         if self.is_skipped_exist(url) or self.is_exist(url):
             return
         beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
@@ -497,9 +499,9 @@ class DBUtils:
                 conn, cursor = self._connect()
                 try:
                     cursor.execute(
-                        "INSERT INTO details_page_skipped (url, album_name, album_code, remark, create_time, update_time) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (url.strip(), album_name.strip(), album_code.strip(), remark.strip(), beijing_time, beijing_time),
+                        "INSERT INTO details_page_skipped (url, album_name, album_code, remark, skip_reason, create_time, update_time) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (url.strip(), album_name.strip(), album_code.strip(), remark.strip(), skip_reason.strip(), beijing_time, beijing_time),
                     )
                     conn.commit()
                 finally:
