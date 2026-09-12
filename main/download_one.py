@@ -469,10 +469,14 @@ def _read_multiline_input() -> str:
 
 
 def main():
+    _DEFAULT_URLS = [
+    ]
+
     if len(sys.argv) > 1:
         raw_text = sys.argv[1].strip()
     else:
-        raw_text = _read_multiline_input()
+        raw_text = "\n".join(_DEFAULT_URLS)
+        log(f"未提供命令行参数，使用默认 {len(_DEFAULT_URLS)} 个链接")
 
     if not raw_text:
         print("未输入任何内容，退出")
