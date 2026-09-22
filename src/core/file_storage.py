@@ -42,11 +42,12 @@ class FileStorageManager:
     # ── 目录创建与清理 ──────────────────────────────
 
     def setup(self) -> None:
-        """创建所有目录并清空临时目录"""
+        """创建所有目录，临时目录有已有文件时先移动到正式目录再清空"""
         self.temp_video_dir.mkdir(parents=True, exist_ok=True)
         self.temp_image_dir.mkdir(parents=True, exist_ok=True)
         self.final_video_dir.mkdir(parents=True, exist_ok=True)
         self.final_image_dir.mkdir(parents=True, exist_ok=True)
+        self.move_all_to_final()
         self._clean_temp(self.temp_video_dir)
         self._clean_temp(self.temp_image_dir)
 
