@@ -75,9 +75,17 @@ def _fetch_urls() -> tuple[list[str], int, str]:
 
 
 def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[str, list[str]]]:
-    """扫描已有文件 MD5 和视频 pHash，返回 (md5_registry, video_hash_registry)"""
+    """扫描已有文件 MD5 和视频 pHash，返回 (md5_registry, video_hash_registry)
+
+    扫描范围包括目标目录和临时目录（临时目录可能保留上次采集未完成的有效文件）。
+    """
     log("\n[0/6] 扫描已有文件 MD5，用于去重...")
-    md5_registry = scan_existing_md5s(storage.final_video_dir) | scan_existing_md5s(storage.final_image_dir)
+    md5_registry = (
+        scan_existing_md5s(storage.final_video_dir)
+        | scan_existing_md5s(storage.final_image_dir)
+        | scan_existing_md5s(storage.temp_video_dir)
+        | scan_existing_md5s(storage.temp_image_dir)
+    )
     log(f"  已有 {len(md5_registry)} 个文件，将跳过重复下载")
 
     video_hash_registry = VideoDedupChecker().scan_existing(storage.final_video_dir)
