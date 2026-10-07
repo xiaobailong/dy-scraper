@@ -170,16 +170,20 @@ async def main():
         async with BrowserManager() as bm:
             last_final_url = None
             for url_idx, target_url in enumerate(url_list, 1):
-                ctx, last_final_url = await processor.process(
-                    page=bm.page,
-                    target_url=target_url,
-                    url_idx=url_idx,
-                    url_total=len(url_list),
-                    collected_requests=bm.collected_requests,
-                    detail_responses=bm.detail_responses,
-                    stats=stats,
-                    last_final_url=last_final_url,
-                )
+                try:
+                    ctx, last_final_url = await processor.process(
+                        page=bm.page,
+                        target_url=target_url,
+                        url_idx=url_idx,
+                        url_total=len(url_list),
+                        collected_requests=bm.collected_requests,
+                        detail_responses=bm.detail_responses,
+                        stats=stats,
+                        last_final_url=last_final_url,
+                    )
+                except ConnectionError:
+                    log(f"\n  ⚠️ 浏览器连接断开，停止处理剩余 {len(url_list) - url_idx} 个 URL")
+                    break
                 if ctx is None:
                     continue
 

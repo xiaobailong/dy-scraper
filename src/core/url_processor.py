@@ -71,21 +71,30 @@ class UrlProcessor:
         # ── 1. goto ──
         log("[2/6] 访问目标页面...")
         goto_ok = True
+        connection_lost = False
         try:
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
-            log(f"  页面加载超时或出错: {e}")
+            err_msg = str(e)
+            log(f"  页面加载超时或出错: {err_msg}")
             goto_ok = False
+            connection_lost = "Connection closed" in err_msg
 
-        final_url = page.url
+        try:
+            final_url = page.url
+        except Exception:
+            final_url = "(无法获取)"
         log(f"  最终跳转地址: {final_url}")
 
         if not goto_ok:
-            log(f"  ⚠️ 页面加载失败，跳过当前 URL")
+            skip_reason = "浏览器连接断开" if connection_lost else "页面加载失败"
+            log(f"  ⚠️ {skip_reason}，跳过当前 URL")
             self._db.insert_skipped(
                 normalize_url(target_url),
-                skip_reason="页面加载失败",
+                skip_reason=skip_reason,
             )
+            if connection_lost:
+                raise ConnectionError("浏览器连接已断开，无法继续处理后续 URL")
             return None, last_final_url or ""
 
         # ── 2. 校验 ──

@@ -86,8 +86,14 @@ class BrowserManager:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         log("\n关闭浏览器...")
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception as e:
+                log(f"  浏览器关闭失败（可能已断开）: {e}")
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                log(f"  Playwright 停止失败: {e}")
         log("完成!")
         return False
