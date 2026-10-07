@@ -142,7 +142,15 @@ async def main():
     try:
         # ── 步骤1-2：获取并过滤 URL ──
         url_list, skipped_count, url_source = _fetch_urls()
+
+        # ── 步骤3：准备目录和去重注册表 ──
+        storage = FileStorageManager()
+        storage.setup()
+
         if not url_list:
+            log(f"\n  共 0 个 URL 待处理，全部已处理过")
+            # 将上次运行遗留的临时文件移动到最终目录
+            storage.move_all_to_final()
             if url_source != "youdao":
                 log("本地文件模式：清空 tmp.txt 并 git 提交...")
                 from data.local_file import clear_tmp_and_git_commit_push
@@ -150,10 +158,6 @@ async def main():
             return
 
         log(f"\n共 {len(url_list)} 个 URL 待处理\n")
-
-        # ── 步骤3：准备目录和去重注册表 ──
-        storage = FileStorageManager()
-        storage.setup()
         md5_registry, video_hash_registry = _scan_dedup_registry(storage)
 
         # ── 步骤4-7：浏览器 + 管线处理 ──
