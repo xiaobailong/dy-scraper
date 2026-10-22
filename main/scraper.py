@@ -16,7 +16,7 @@ from config import (
     RESULT_DIR,
 )
 from data.db_utils import DBUtils, FileLock
-from data.sync_manager import SyncManager
+from data.db_sync_manager import SyncManager
 from common.logger import log
 from core.browser_manager import BrowserManager
 from core.url_processor import UrlProcessor
