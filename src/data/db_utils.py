@@ -7,8 +7,6 @@ import time
 import random
 from datetime import datetime, timedelta
 
-from config import DB_FILE
-
 
 class FileLock:
     """跨进程文件锁，用于协调多个进程对同一 SQLite 数据库的写入操作"""
@@ -130,7 +128,10 @@ class FileLock:
 class DBUtils:
     """SQLite 数据库工具，与 dy_detail_python 共享 details_page 表"""
 
-    def __init__(self, db_file: str = DB_FILE):
+    def __init__(self, db_file: str = None):
+        if db_file is None:
+            import config
+            db_file = config.DB_FILE
         self.db_file = db_file
         self._init_table()
         self._init_skipped_table()
@@ -163,6 +164,8 @@ class DBUtils:
                     ("create_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("update_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("album_code", "TEXT DEFAULT ''"),
+                    ("sync_status", "TEXT DEFAULT ''"),
+                    ("sync_time", "TEXT DEFAULT ''"),
                 ]:
                     if col not in columns:
                         cursor.execute(
@@ -218,6 +221,8 @@ class DBUtils:
                     ("same_site", "TEXT DEFAULT 'Lax'"),
                     ("expires", "REAL DEFAULT -1"),
                     ("update_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("sync_status", "TEXT DEFAULT ''"),
+                    ("sync_time", "TEXT DEFAULT ''"),
                 ]:
                     if col not in columns:
                         try:
@@ -248,6 +253,8 @@ class DBUtils:
             else:
                 for col, col_type in [
                     ("create_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("sync_status", "TEXT DEFAULT ''"),
+                    ("sync_time", "TEXT DEFAULT ''"),
                 ]:
                     if col not in columns:
                         cursor.execute(
@@ -333,6 +340,8 @@ class DBUtils:
                     ("update_time", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                     ("album_code", "TEXT DEFAULT ''"),
                     ("skip_reason", "TEXT DEFAULT ''"),
+                    ("sync_status", "TEXT DEFAULT ''"),
+                    ("sync_time", "TEXT DEFAULT ''"),
                 ]:
                     if col not in columns:
                         cursor.execute(

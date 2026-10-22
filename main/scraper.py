@@ -16,6 +16,7 @@ from config import (
     RESULT_DIR,
 )
 from data.db_utils import DBUtils, FileLock
+from data.sync_manager import SyncManager
 from common.logger import log
 from core.browser_manager import BrowserManager
 from core.url_processor import UrlProcessor
@@ -132,12 +133,27 @@ async def main():
     log("  抖音网页内容抓取工具 (Playwright)")
     log("=" * 60)
 
-    # ── 进程锁 ──
+    # ── 进程锁（使用原始路径，防止并发运行）──
     from config import DB_FILE
-    _process_lock = FileLock(DB_FILE + ".process", timeout=0.5)
+    _original_db = DB_FILE
+    _process_lock = FileLock(_original_db + ".process", timeout=0.5)
     if not _process_lock.acquire():
         log("  检测到另一个爬虫正在运行，退出（避免重复下载）")
         return
+
+    # ── 同步管理器：拷贝 → 本地库 → 爬虫 → 合并 → 源库 ──
+    _data_dir = Path(__file__).parent.parent / "data"
+    _sync_mgr = SyncManager(_original_db, _data_dir)
+
+    # 1. 恢复上次可能未完成的合并（崩溃/异常中断等场景）
+    _sync_mgr.recover_pending()
+
+    # 2. 拷贝源库到本地（带时间戳版本），避免抓取过程中频繁触发百度网盘同步
+    _temp_db = _sync_mgr.copy_to_local()
+
+    # 后续所有数据库操作走本地临时文件，不再触发网盘 IO
+    import config
+    config.DB_FILE = _temp_db
 
     try:
         # ── 步骤1-2：获取并过滤 URL ──
@@ -195,6 +211,15 @@ async def main():
         _finalize(stats, storage, url_source, skipped_count)
 
     finally:
+        # ── 3. 将本地库新增数据合并到百度网盘同步目录（增量追加，不覆盖已有数据）──
+        log(f"\n  正在将新增数据合并回百度网盘...")
+        try:
+            _sync_mgr.merge_to_original(_temp_db)
+            log(f"  新增数据已合并至: {_original_db}")
+        except Exception as e:
+            log(f"  ⚠️ 数据合并失败: {e}", "error")
+            log(f"  本地库完整保留在 {_temp_db}，下次启动自动恢复")
+
         _process_lock.release()
 
 
