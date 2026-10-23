@@ -65,9 +65,9 @@ class SyncManager:
     def recover_pending(self) -> dict:
         """恢复之前未成功合并的数据。
 
-        扫描 local_dir 下所有备份文件，与源库 sync_log 比对，
-        找到未完成合并的备份文件，将其中的新增记录合并到源库。
-        幂等操作：已合并的不会重复处理，未合并的会补上。
+        扫描 local_dir 下所有备份文件，与 backup_sync_log 比对，
+        只处理尚未记录在案的新备份文件，已处理的不再重复。
+        幂等操作：已合并的不会重复处理。
 
         Returns:
             {source_filename: {table_name: merged_count}, ...}
@@ -77,7 +77,7 @@ class SyncManager:
 
         self._ensure_schema()
 
-        last_sources = self._read_last_sources()
+        processed_backups = self._read_processed_backups()
         all_backups = sorted(
             self._local_dir.glob("douyin_*.db"),
             key=lambda p: p.name,
@@ -85,15 +85,7 @@ class SyncManager:
         if not all_backups:
             return {}
 
-        # 找出所有"可能未完成合并"的备份文件：
-        # 备份文件名 > 某个表的 last_source_file → 该表可能未从该备份合并
-        pending = []
-        for backup in all_backups:
-            for table in self.TABLES:
-                last_src = last_sources.get(table, "")
-                if not last_src or backup.name > last_src:
-                    pending.append(backup)
-                    break
+        pending = [b for b in all_backups if b.name not in processed_backups]
 
         if not pending:
             log(f"  无待恢复的合并")
@@ -218,29 +210,35 @@ class SyncManager:
                     last_source_file TEXT DEFAULT ''
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS backup_sync_log (
+                    backup_file  TEXT PRIMARY KEY NOT NULL,
+                    sync_time    TEXT DEFAULT '',
+                    record_count INTEGER DEFAULT 0
+                )
+            """)
             conn.commit()
         finally:
             conn.close()
 
-    def _read_last_sources(self) -> dict[str, str]:
-        """读取 sync_log 中各表最后成功合并的来源文件名。"""
+    def _read_processed_backups(self) -> set[str]:
+        """读取 backup_sync_log 中已完成合并的备份文件名列表。"""
         conn = sqlite3.connect(self._original)
         try:
-            conn.execute("PRAGMA table_info(sync_log)")
+            conn.execute("PRAGMA table_info(backup_sync_log)")
         except sqlite3.OperationalError:
-            return {}
+            return set()
         finally:
             conn.close()
 
         conn = sqlite3.connect(self._original)
         try:
             rows = conn.execute(
-                "SELECT table_name, last_source_file FROM sync_log "
-                "WHERE last_source_file != ''"
+                "SELECT backup_file FROM backup_sync_log"
             ).fetchall()
-            return {r[0]: r[1] for r in rows}
+            return {r[0] for r in rows}
         except sqlite3.OperationalError:
-            return {}
+            return set()
         finally:
             conn.close()
 
@@ -335,6 +333,15 @@ class SyncManager:
                     except sqlite3.OperationalError:
                         pass
                 log(f"  首次同步完成，存量记录已标记为 '{self.SYNC_INITIAL}'")
+
+            # 记录此备份文件的处理状态，防止后续重复处理
+            total_records = sum(stats.values())
+            conn.execute(
+                "INSERT OR REPLACE INTO backup_sync_log "
+                "(backup_file, sync_time, record_count) "
+                "VALUES (?, ?, ?)",
+                (src_filename, _now, total_records),
+            )
 
             conn.commit()
             try:
