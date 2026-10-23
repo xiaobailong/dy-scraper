@@ -284,36 +284,34 @@ class SyncManager:
                     f"SELECT * FROM src.{table_name} WHERE sync_status = ''"
                 ).fetchall()
 
-                if not src_rows:
-                    continue
-
-                col_info = conn.execute(
-                    f"PRAGMA table_info({table_name})"
-                ).fetchall()
-                col_names = [c[1] for c in col_info]
-                cols_str = ", ".join(col_names)
-                ph = ", ".join(["?" for _ in col_names])
-
-                si = col_names.index("sync_status") if "sync_status" in col_names else -1
-                ti = col_names.index("sync_time") if "sync_time" in col_names else -1
-
                 merged = 0
-                for row_data in src_rows:
-                    new_row = list(row_data)
-                    if si >= 0:
-                        new_row[si] = self.SYNC_SYNCED
-                    if ti >= 0:
-                        new_row[ti] = _now
-                    try:
-                        conn.execute(
-                            f"INSERT OR IGNORE INTO {table_name} ({cols_str}) "
-                            f"VALUES ({ph})",
-                            new_row,
-                        )
-                        if conn.changes() > 0:
-                            merged += 1
-                    except Exception:
-                        pass
+                if src_rows:
+                    col_info = conn.execute(
+                        f"PRAGMA table_info({table_name})"
+                    ).fetchall()
+                    col_names = [c[1] for c in col_info]
+                    cols_str = ", ".join(col_names)
+                    ph = ", ".join(["?" for _ in col_names])
+
+                    si = col_names.index("sync_status") if "sync_status" in col_names else -1
+                    ti = col_names.index("sync_time") if "sync_time" in col_names else -1
+
+                    for row_data in src_rows:
+                        new_row = list(row_data)
+                        if si >= 0:
+                            new_row[si] = self.SYNC_SYNCED
+                        if ti >= 0:
+                            new_row[ti] = _now
+                        try:
+                            conn.execute(
+                                f"INSERT OR IGNORE INTO {table_name} ({cols_str}) "
+                                f"VALUES ({ph})",
+                                new_row,
+                            )
+                            if conn.changes() > 0:
+                                merged += 1
+                        except Exception:
+                            pass
 
                 stats[table_name] = merged
 
