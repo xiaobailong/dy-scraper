@@ -134,6 +134,7 @@ class DBUtils:
             db_file = config.DB_FILE
         self.db_file = db_file
         self._init_table()
+        self._migrate_details_page_if_needed()
         self._init_skipped_table()
         self._init_config_table()
         self._init_cookies_table()
@@ -172,6 +173,75 @@ class DBUtils:
                             f"ALTER TABLE details_page ADD COLUMN {col} {col_type}"
                         )
             conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _migrate_details_page_if_needed(self) -> None:
+        """如果 details_page 表缺少 url 唯一约束，自动去重并重建。"""
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("PRAGMA table_info(details_page)")
+            columns = {col[1]: col[5] for col in cursor.fetchall()}
+        except sqlite3.OperationalError:
+            cursor.close()
+            conn.close()
+            return
+        cursor.close()
+        conn.close()
+
+        if not columns:
+            return
+
+        url_pk = columns.get("url", 0)
+        if url_pk and url_pk > 0:
+            return
+
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("PRAGMA index_list(details_page)")
+            for idx in cursor.fetchall():
+                if idx[2]:
+                    cursor.execute(f"PRAGMA index_info({idx[1]})")
+                    idx_cols = [c[2] for c in cursor.fetchall()]
+                    if idx_cols == ["url"]:
+                        cursor.close()
+                        conn.close()
+                        return
+        finally:
+            cursor.close()
+            conn.close()
+
+        print("[DBUtils] details_page 缺少 url 唯一约束，正在去重重建…")
+        conn, cursor = self._connect()
+        try:
+            cursor.execute("PRAGMA journal_mode=DELETE")
+            cursor.executescript("""
+                CREATE TABLE details_page_new (
+                    url TEXT NOT NULL,
+                    album_name TEXT DEFAULT '',
+                    album_code TEXT DEFAULT '',
+                    remark TEXT DEFAULT '',
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    sync_status TEXT DEFAULT '',
+                    sync_time TEXT DEFAULT ''
+                );
+                CREATE UNIQUE INDEX idx_details_page_url ON details_page_new(url);
+                INSERT INTO details_page_new
+                SELECT url,
+                       MAX(album_name), MAX(album_code), MAX(remark),
+                       MIN(create_time), MIN(update_time),
+                       MAX(sync_status), MIN(sync_time)
+                FROM details_page GROUP BY url;
+                DROP TABLE details_page;
+                ALTER TABLE details_page_new RENAME TO details_page;
+            """)
+            conn.commit()
+            new_cnt = cursor.execute(
+                "SELECT COUNT(*) FROM details_page"
+            ).fetchone()[0]
+            print(f"[DBUtils] details_page 重建完成：{new_cnt} 行（已去重）")
         finally:
             cursor.close()
             conn.close()
