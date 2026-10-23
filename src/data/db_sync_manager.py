@@ -12,7 +12,7 @@
   2. copy_to_local()    — 拷贝源库到本地（带时间戳版本）
   3. [爬虫写入本地库]
   4. merge_to_original() — 增量合并本地新增 → 源库
-  5. cleanup_backups()   — 保留最近 7 个版本
+  5. cleanup_backups()   — 保留最近 30 天的备份
 """
 
 import os
@@ -117,7 +117,7 @@ class SyncManager:
         else:
             log(f"  源库不存在，将在本地创建新数据库: {local_path}")
 
-        self.cleanup_backups(keep=7)
+        self.cleanup_backups(keep_days=30)
         return local_path
 
     def merge_to_original(self, local_db: str) -> dict:
@@ -155,19 +155,41 @@ class SyncManager:
         stats = self._merge_file(local_db)
         return stats
 
-    def cleanup_backups(self, keep: int = 7) -> None:
-        """清理旧备份，保留最近 keep 个 douyin_*.db 文件。"""
+    def cleanup_backups(self, keep_days: int = 30) -> None:
+        """清理旧备份文件及同步记录，只保留最近 keep_days 天的数据。"""
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=keep_days)
+
+        # 1. 清理旧备份文件
         backups = sorted(
             self._local_dir.glob("douyin_*.db"),
             key=lambda p: p.name,
-            reverse=True,
         )
-        for old_file in backups[keep:]:
+        for f in backups:
             try:
-                old_file.unlink()
-                log(f"  清理旧备份: {old_file.name}", "debug")
-            except Exception:
+                ts_str = f.stem.replace("douyin_", "")
+                file_time = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
+                if file_time < cutoff:
+                    f.unlink()
+                    log(f"  清理旧备份: {f.name}", "debug")
+            except (ValueError, Exception):
                 pass
+
+        # 2. 清理 backup_sync_log 中超过 keep_days 的旧记录
+        if os.path.exists(self._original):
+            conn = sqlite3.connect(self._original)
+            conn.execute("PRAGMA busy_timeout=5000")
+            try:
+                conn.execute(
+                    "DELETE FROM backup_sync_log "
+                    "WHERE backup_file < ?",
+                    (f"douyin_{cutoff.strftime('%Y%m%d%H%M%S')}.db",),
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
 
     # ================================================================
     # 内部方法
