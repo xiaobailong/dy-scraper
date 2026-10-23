@@ -117,7 +117,7 @@ class SyncManager:
         else:
             log(f"  源库不存在，将在本地创建新数据库: {local_path}")
 
-        self.cleanup_backups(keep_days=30)
+        self.cleanup_backups(keep_files=7, keep_log_days=30)
         return local_path
 
     def merge_to_original(self, local_db: str) -> dict:
@@ -155,28 +155,30 @@ class SyncManager:
         stats = self._merge_file(local_db)
         return stats
 
-    def cleanup_backups(self, keep_days: int = 30) -> None:
-        """清理旧备份文件及同步记录，只保留最近 keep_days 天的数据。"""
-        from datetime import datetime, timedelta
-        cutoff = datetime.now() - timedelta(days=keep_days)
+    def cleanup_backups(self, keep_files: int = 7, keep_log_days: int = 30) -> None:
+        """清理旧备份文件和同步记录。
 
-        # 1. 清理旧备份文件
+        - 备份文件：只保留最近 keep_files 个
+        - backup_sync_log 记录：只保留最近 keep_log_days 天的数据
+        """
+        from datetime import datetime, timedelta
+
+        # 1. 清理旧备份文件（按个数保留）
         backups = sorted(
             self._local_dir.glob("douyin_*.db"),
             key=lambda p: p.name,
+            reverse=True,
         )
-        for f in backups:
+        for old_file in backups[keep_files:]:
             try:
-                ts_str = f.stem.replace("douyin_", "")
-                file_time = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
-                if file_time < cutoff:
-                    f.unlink()
-                    log(f"  清理旧备份: {f.name}", "debug")
-            except (ValueError, Exception):
+                old_file.unlink()
+                log(f"  清理旧备份: {old_file.name}", "debug")
+            except Exception:
                 pass
 
-        # 2. 清理 backup_sync_log 中超过 keep_days 的旧记录
+        # 2. 清理 backup_sync_log 中超过 keep_log_days 的旧记录
         if os.path.exists(self._original):
+            cutoff = datetime.now() - timedelta(days=keep_log_days)
             conn = sqlite3.connect(self._original)
             conn.execute("PRAGMA busy_timeout=5000")
             try:
