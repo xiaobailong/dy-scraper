@@ -12,9 +12,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
-from config import (
-    RESULT_DIR,
-)
 from data.db_utils import DBUtils, FileLock
 from data.db_sync_manager import SyncManager
 from common.logger import log
@@ -184,7 +181,6 @@ async def main():
             video_hash_registry=video_hash_registry,
             temp_video_dir=storage.temp_video_dir,
             temp_image_dir=storage.temp_image_dir,
-            result_dir=RESULT_DIR,
         )
 
         async with BrowserManager() as bm:

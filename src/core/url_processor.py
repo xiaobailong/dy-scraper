@@ -40,14 +40,12 @@ class UrlProcessor:
         video_hash_registry: dict[str, list[str]],
         temp_video_dir: Path,
         temp_image_dir: Path,
-        result_dir: Path,
     ):
         self._db = db
         self._md5_registry = md5_registry
         self._video_hash_registry = video_hash_registry
         self._temp_video_dir = temp_video_dir
         self._temp_image_dir = temp_image_dir
-        self._result_dir = result_dir
 
     async def process(
         self,
@@ -170,10 +168,6 @@ class UrlProcessor:
 
         self._record_to_db(ctx, target_url, final_url)
         ctx.push_stage("db_record")
-
-        result_path = ctx.save_result_json(self._result_dir)
-        ctx.push_stage("save_result")
-        log(f"  结果已保存: {result_path}")
 
         ctx.print_stages()
         return ctx, final_url
