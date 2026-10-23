@@ -296,8 +296,6 @@ class DBUtils:
 
     def insert_final_url(self, final_url: str, short_url: str = "") -> None:
         """记录最终跳转地址与短链接的映射关系"""
-        if self.is_final_url_exist(final_url):
-            return
         beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -305,6 +303,12 @@ class DBUtils:
             with self.lock_db():
                 conn, cursor = self._connect()
                 try:
+                    cursor.execute(
+                        "SELECT 1 FROM details_page_final_url WHERE final_url=?",
+                        (final_url.strip(),)
+                    )
+                    if cursor.fetchone():
+                        return
                     cursor.execute(
                         "INSERT INTO details_page_final_url (final_url, short_url, create_time) "
                         "VALUES (?, ?, ?)",
@@ -453,8 +457,6 @@ class DBUtils:
             conn.close()
 
     def insert(self, url: str, album_name: str = "", album_code: str = "", remark: str = "") -> None:
-        if self.is_exist(url):
-            return
         beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -462,6 +464,11 @@ class DBUtils:
             with self.lock_db():
                 conn, cursor = self._connect()
                 try:
+                    cursor.execute(
+                        "SELECT 1 FROM details_page WHERE url=?", (url.strip(),)
+                    )
+                    if cursor.fetchone():
+                        return
                     cursor.execute(
                         "INSERT INTO details_page (url, album_name, album_code, remark, create_time, update_time) "
                         "VALUES (?, ?, ?, ?, ?, ?)",
@@ -498,8 +505,6 @@ class DBUtils:
             conn.close()
 
     def insert_skipped(self, url: str, album_name: str = "", album_code: str = "", remark: str = "", skip_reason: str = "") -> None:
-        if self.is_skipped_exist(url) or self.is_exist(url):
-            return
         beijing_time = (datetime.utcnow() + timedelta(hours=8)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -507,6 +512,16 @@ class DBUtils:
             with self.lock_db():
                 conn, cursor = self._connect()
                 try:
+                    cursor.execute(
+                        "SELECT 1 FROM details_page_skipped WHERE url=?", (url.strip(),)
+                    )
+                    if cursor.fetchone():
+                        return
+                    cursor.execute(
+                        "SELECT 1 FROM details_page WHERE url=?", (url.strip(),)
+                    )
+                    if cursor.fetchone():
+                        return
                     cursor.execute(
                         "INSERT INTO details_page_skipped (url, album_name, album_code, remark, skip_reason, create_time, update_time) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?)",
