@@ -338,8 +338,11 @@ class SyncManager:
                         pass
                 log(f"  首次同步完成，存量记录已标记为 '{self.SYNC_INITIAL}'")
 
-            conn.execute("DETACH DATABASE src")
             conn.commit()
+            try:
+                conn.execute("DETACH DATABASE src")
+            except sqlite3.OperationalError:
+                pass  # DETACH 失败不影响数据完整性，关闭连接时自动释放
             return stats
         finally:
             conn.close()
