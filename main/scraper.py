@@ -130,16 +130,16 @@ async def main():
     log("  抖音网页内容抓取工具 (Playwright)")
     log("=" * 60)
 
-    # ── 进程锁（使用原始路径，防止并发运行）──
+    # ── 同步管理器：拷贝 → 本地库 → 爬虫 → 合并 → 源库 ──
     from config import DB_FILE
     _original_db = DB_FILE
-    _process_lock = FileLock(_original_db + ".process", timeout=0.5)
+    _data_dir = Path(__file__).parent.parent / "data"
+
+    # ── 进程锁（放在本地 data/ 目录，避免触发百度网盘同步）──
+    _process_lock = FileLock(str(_data_dir / "scraper.process"), timeout=0.5)
     if not _process_lock.acquire():
         log("  检测到另一个爬虫正在运行，退出（避免重复下载）")
         return
-
-    # ── 同步管理器：拷贝 → 本地库 → 爬虫 → 合并 → 源库 ──
-    _data_dir = Path(__file__).parent.parent / "data"
     _sync_mgr = SyncManager(_original_db, _data_dir)
 
     # 1. 恢复上次可能未完成的合并（崩溃/异常中断等场景）
