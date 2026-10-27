@@ -11,6 +11,9 @@ logs/
 *.db.lock
 *.db.process
 
+# 数据目录
+data/
+
 # IDE
 .vscode/
 .idea/
