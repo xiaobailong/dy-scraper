@@ -21,6 +21,7 @@ from core.file_storage import FileStorageManager
 from entity.scrape_stats import ScrapeStats
 from common.utils import normalize_url, scan_existing_md5s
 from common.video_dedup import VideoDedupChecker
+from common.image_dedup import ImageDedupChecker
 
 # ============================================================
 # 步骤函数
@@ -72,8 +73,8 @@ def _fetch_urls() -> tuple[list[str], int, str]:
     return new_urls, skipped_count, url_source
 
 
-def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[str, list[str]]]:
-    """扫描已有文件 MD5 和视频 pHash，返回 (md5_registry, video_hash_registry)
+def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[str, list[str]], dict[str, str]]:
+    """扫描已有文件 MD5、视频 pHash 和图片 pHash，返回 (md5_registry, video_hash_registry, image_hash_registry)
 
     扫描范围包括目标目录和临时目录（临时目录可能保留上次采集未完成的有效文件）。
     """
@@ -89,7 +90,9 @@ def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[st
     video_hash_registry = VideoDedupChecker().scan_existing(storage.final_video_dir)
     if video_hash_registry:
         log(f"  已扫描 {len(video_hash_registry)} 个视频的 pHash 指纹")
-    return md5_registry, video_hash_registry
+
+    image_hash_registry = ImageDedupChecker().scan_existing(storage.final_image_dir)
+    return md5_registry, video_hash_registry, image_hash_registry
 
 
 def _finalize(stats: ScrapeStats, storage: FileStorageManager, url_source: str, skipped_count: int) -> None:
@@ -171,7 +174,7 @@ async def main():
             return
 
         log(f"\n共 {len(url_list)} 个 URL 待处理\n")
-        md5_registry, video_hash_registry = _scan_dedup_registry(storage)
+        md5_registry, video_hash_registry, image_hash_registry = _scan_dedup_registry(storage)
 
         # ── 步骤4-7：浏览器 + 管线处理 ──
         stats = ScrapeStats(url_total=len(url_list))
@@ -179,6 +182,7 @@ async def main():
             db=DBUtils(),
             md5_registry=md5_registry,
             video_hash_registry=video_hash_registry,
+            image_hash_registry=image_hash_registry,
             temp_video_dir=storage.temp_video_dir,
             temp_image_dir=storage.temp_image_dir,
         )

@@ -91,6 +91,7 @@ async def download_files(
     max_workers: int = 5,
     md5_registry: set[str] | None = None,
     video_hash_registry: dict[str, list[str]] | None = None,
+    image_hash_registry: dict[str, str] | None = None,
 ) -> list[dict]:
     """异步下载文件，通过 MD5 和 pHash 去重。
 
@@ -101,6 +102,7 @@ async def download_files(
         max_workers: 并发下载线程数
         md5_registry: 全局 MD5 去重注册表
         video_hash_registry: 全局视频 pHash 去重注册表
+        image_hash_registry: 全局图片 pHash 去重注册表
 
     Returns:
         下载结果列表（同时写入 ctx.video_results 或 ctx.image_results）
@@ -113,6 +115,8 @@ async def download_files(
         md5_registry = set()
     if video_hash_registry is None:
         video_hash_registry = {}
+    if image_hash_registry is None:
+        image_hash_registry = {}
 
     save_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -203,11 +207,6 @@ async def download_files(
                         else:
                             # 已有文件被删除，当前文件保留
                             log(f"  [{i + 1}/{len(urls)}] 视频pHash重复，保留当前(较大): {final_name} ({info})")
-                    # 将当前视频指纹加入注册表
-                    if final_path.exists():
-                        fingerprint = video_dedup.compute_fingerprint(final_path)
-                        if fingerprint:
-                            video_hash_registry[final_name] = fingerprint
 
                 # 图片下载后检查：表情包尺寸过滤
                 if file_type == "image" and image_dedup.is_emoji_by_dimensions(final_path):
@@ -219,23 +218,35 @@ async def download_files(
                     })
                     continue
 
-                # 图片下载后检查：pHash 相似度去重
-                if file_type == "image" and image_dedup.check_and_dedup(final_path, save_dir):
-                    if not final_path.exists():
-                        log(f"  [{i + 1}/{len(urls)}] 删除 (pHash重复-较小): {final_name} ({info})")
-                        results.append({
-                            "name": final_name, "url": url, "path": "", "size": info,
-                            "md5": md5, "status": "skipped_phash_dup"
-                        })
-                        continue
-                    else:
-                        log(f"  [{i + 1}/{len(urls)}] pHash重复，保留当前(较大): {final_name} ({info})")
+                # 图片下载后检查：pHash 相似度去重（先查全局注册表，再查同目录已有文件）
+                if file_type == "image":
+                    is_dup = image_dedup.check_and_dedup_with_registry(final_path, image_hash_registry)
+                    if not is_dup:
+                        is_dup = image_dedup.check_and_dedup(final_path, save_dir)
+                    if is_dup:
+                        if not final_path.exists():
+                            log(f"  [{i + 1}/{len(urls)}] 删除 (图片pHash重复-较小): {final_name} ({info})")
+                            results.append({
+                                "name": final_name, "url": url, "path": "", "size": info,
+                                "md5": md5, "status": "skipped_image_phash_dup"
+                            })
+                            continue
+                        else:
+                            log(f"  [{i + 1}/{len(urls)}] 图片pHash重复，保留当前(较大): {final_name} ({info})")
 
                 log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})  [来源: {actual_url}]  [页面: {page_url}]")
                 results.append({
                     "name": final_name, "url": url, "path": str(final_path),
                     "size": info, "md5": md5, "status": "downloaded"
                 })
+
+                # 将成功的图片/视频指纹加入全局注册表
+                if file_type == "image" and final_path.exists():
+                    ImageDedupChecker.add_to_registry(image_hash_registry, final_path)
+                elif file_type == "video" and final_path.exists():
+                    fingerprint = video_dedup.compute_fingerprint(final_path)
+                    if fingerprint:
+                        video_hash_registry[final_name] = fingerprint
             else:
                 if final_path.exists():
                     safe_unlink(final_path)

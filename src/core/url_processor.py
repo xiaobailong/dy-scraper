@@ -38,12 +38,14 @@ class UrlProcessor:
         db,
         md5_registry: set[str],
         video_hash_registry: dict[str, list[str]],
+        image_hash_registry: dict[str, str],
         temp_video_dir: Path,
         temp_image_dir: Path,
     ):
         self._db = db
         self._md5_registry = md5_registry
         self._video_hash_registry = video_hash_registry
+        self._image_hash_registry = image_hash_registry
         self._temp_video_dir = temp_video_dir
         self._temp_image_dir = temp_image_dir
 
@@ -158,6 +160,7 @@ class UrlProcessor:
             ctx, self._temp_image_dir, "image", max_workers=8,
             md5_registry=self._md5_registry,
             video_hash_registry=self._video_hash_registry,
+            image_hash_registry=self._image_hash_registry,
         )
         ctx.push_stage("download_image")
 

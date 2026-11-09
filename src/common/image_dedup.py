@@ -132,6 +132,109 @@ class ImageDedupChecker:
 
         return False
 
+    def check_and_dedup_with_registry(
+        self,
+        file_path: Path,
+        registry: dict[str, str],
+        hamming_threshold: int = 5,
+    ) -> bool:
+        """检查 file_path 是否与全局注册表中的图片 pHash 相似。
+
+        与 check_and_dedup 的区别：不扫描目录，而是对比 registry 中的指纹。
+        registry 格式: {文件名: pHash字符串}，新下载的图片应调用 add_to_registry 加入。
+
+        返回 True  → 当前文件被删除
+        返回 False → 当前文件保留（无重复 或 当前文件更大，已删除旧文件）
+        """
+        if not self._available or not file_path.exists():
+            return False
+        if not registry:
+            return False
+
+        current_hash = self.compute_phash(file_path)
+        if current_hash is None:
+            return False
+
+        current_size = file_path.stat().st_size
+
+        to_remove = []
+        for existing_name, existing_hash in list(registry.items()):
+            try:
+                dist = int(imagehash.hex_to_hash(current_hash) -
+                           imagehash.hex_to_hash(existing_hash))
+            except Exception:
+                continue
+
+            if dist <= hamming_threshold:
+                existing_path = file_path.parent / existing_name
+                if not existing_path.exists():
+                    to_remove.append(existing_name)
+                    continue
+                try:
+                    if existing_path.samefile(file_path):
+                        continue
+                except (FileNotFoundError, OSError):
+                    to_remove.append(existing_name)
+                    continue
+
+                try:
+                    existing_size = existing_path.stat().st_size
+                except (FileNotFoundError, OSError):
+                    to_remove.append(existing_name)
+                    continue
+
+                if current_size >= existing_size:
+                    from common.utils import safe_unlink
+                    safe_unlink(existing_path)
+                    to_remove.append(existing_name)
+                    return False
+                else:
+                    from common.utils import safe_unlink
+                    safe_unlink(file_path)
+                    return True
+
+        for name in to_remove:
+            registry.pop(name, None)
+        return False
+
+    @staticmethod
+    def add_to_registry(registry: dict[str, str], file_path: Path) -> None:
+        """将成功下载的图片的 pHash 加入全局注册表"""
+        if not registry:
+            return
+        if _HASH_AVAILABLE and file_path.exists():
+            try:
+                img = Image.open(file_path)
+                phash = str(imagehash.phash(img))
+                registry[file_path.name] = phash
+            except Exception:
+                pass
+
+    def scan_existing(self, directory: Path) -> dict[str, str]:
+        """扫描目录下已有图片的 pHash 指纹。
+
+        返回 {文件名: pHash字符串}
+        """
+        if not self._available:
+            return {}
+        if not directory.exists():
+            return {}
+
+        result = {}
+        for f in directory.iterdir():
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in _IMAGE_EXTENSIONS:
+                continue
+
+            phash = self.compute_phash(f)
+            if phash:
+                result[f.name] = phash
+
+        if result:
+            log(f"  已扫描 {len(result)} 个图片的 pHash 指纹")
+        return result
+
     # ── 封面图识别 ──────────────────────────────────
 
     @staticmethod
