@@ -161,17 +161,26 @@ async def download_files(
             task = loop.run_in_executor(pool, download_file_sync, url, final_path, referer)
             tasks.append((i, url, final_name, final_path, task))
 
+        dedup_deleted: set[str] = set()
+
         for i, url, final_name, final_path, task in tasks:
             success, info, md5, actual_url, page_url = await task
             if success:
                 try:
                     actual_size = final_path.stat().st_size
                 except FileNotFoundError:
-                    log(f"  [{i + 1}/{len(urls)}] 失败 (文件丢失): {final_name}")
-                    results.append({
-                        "name": final_name, "url": url, "path": "", "size": info,
-                        "md5": md5, "status": "failed", "error": "文件写入后消失"
-                    })
+                    if final_name in dedup_deleted:
+                        log(f"  [{i + 1}/{len(urls)}] 删除 (图片pHash重复-较小): {final_name} ({info})")
+                        results.append({
+                            "name": final_name, "url": url, "path": "", "size": info,
+                            "md5": md5, "status": "skipped_image_phash_dup"
+                        })
+                    else:
+                        log(f"  [{i + 1}/{len(urls)}] 失败 (文件丢失): {final_name}")
+                        results.append({
+                            "name": final_name, "url": url, "path": "", "size": info,
+                            "md5": md5, "status": "failed", "error": "文件写入后消失"
+                        })
                     continue
                 if actual_size < MIN_FILE_SIZE:
                     safe_unlink(final_path)
@@ -222,7 +231,7 @@ async def download_files(
                 if file_type == "image":
                     is_dup = image_dedup.check_and_dedup_with_registry(final_path, image_hash_registry)
                     if not is_dup:
-                        is_dup = image_dedup.check_and_dedup(final_path, save_dir)
+                        is_dup = image_dedup.check_and_dedup(final_path, save_dir, deleted_names=dedup_deleted)
                     if is_dup:
                         if not final_path.exists():
                             log(f"  [{i + 1}/{len(urls)}] 删除 (图片pHash重复-较小): {final_name} ({info})")

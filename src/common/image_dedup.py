@@ -14,8 +14,10 @@ try:
     from PIL import Image
     import imagehash
     _HASH_AVAILABLE = True
-except ImportError:
+    _HASH_IMPORT_ERROR = None
+except ImportError as _e:
     _HASH_AVAILABLE = False
+    _HASH_IMPORT_ERROR = _e
 
 
 # 封面图 URL 特征
@@ -50,8 +52,17 @@ class ImageDedupChecker:
     - 表情包尺寸检测（下载后）
     """
 
+    _availability_warned = False
+
     def __init__(self):
         self._available = _HASH_AVAILABLE
+        if not self._available and not ImageDedupChecker._availability_warned:
+            ImageDedupChecker._availability_warned = True
+            log(
+                f"  ⚠️ 图片 pHash 去重不可用：缺少依赖 imagehash/Pillow（{_HASH_IMPORT_ERROR}），"
+                f"请安装：pip install imagehash pillow",
+                "warning",
+            )
 
     @property
     def available(self) -> bool:
@@ -72,7 +83,8 @@ class ImageDedupChecker:
     # ── 相似度去重 ──────────────────────────────────
 
     def check_and_dedup(self, file_path: Path, directory: Path,
-                        hamming_threshold: int = 5) -> bool:
+                        hamming_threshold: int = 5,
+                        deleted_names: set | None = None) -> bool:
         """检查 file_path 是否与 directory 下已有图片 pHash 相似。
 
         如果相似，删除较小的文件：
@@ -83,6 +95,8 @@ class ImageDedupChecker:
             file_path: 待检查的文件路径
             directory: 已有文件所在目录
             hamming_threshold: Hamming 距离阈值，≤ 此值视为同一张图
+            deleted_names: 可选集合，用于收集本次被删除的文件名（供调用方
+                区分"被去重删除"与"下载后丢失"）
         """
         if not self._available:
             return False
@@ -124,10 +138,14 @@ class ImageDedupChecker:
                 if current_size >= existing_size:
                     from common.utils import safe_unlink
                     safe_unlink(existing)
+                    if deleted_names is not None:
+                        deleted_names.add(existing.name)
                     return False
                 else:
                     from common.utils import safe_unlink
                     safe_unlink(file_path)
+                    if deleted_names is not None:
+                        deleted_names.add(file_path.name)
                     return True
 
         return False
@@ -141,7 +159,8 @@ class ImageDedupChecker:
         """检查 file_path 是否与全局注册表中的图片 pHash 相似。
 
         与 check_and_dedup 的区别：不扫描目录，而是对比 registry 中的指纹。
-        registry 格式: {文件名: pHash字符串}，新下载的图片应调用 add_to_registry 加入。
+        registry 格式: {完整路径字符串: pHash字符串}，新下载的图片应调用
+        add_to_registry 加入，已有文件用 scan_existing 预扫描加入。
 
         返回 True  → 当前文件被删除
         返回 False → 当前文件保留（无重复 或 当前文件更大，已删除旧文件）
@@ -157,8 +176,9 @@ class ImageDedupChecker:
 
         current_size = file_path.stat().st_size
 
+        is_dup = False
         to_remove = []
-        for existing_name, existing_hash in list(registry.items()):
+        for existing_key, existing_hash in list(registry.items()):
             try:
                 dist = int(imagehash.hex_to_hash(current_hash) -
                            imagehash.hex_to_hash(existing_hash))
@@ -166,54 +186,57 @@ class ImageDedupChecker:
                 continue
 
             if dist <= hamming_threshold:
-                existing_path = file_path.parent / existing_name
+                existing_path = Path(existing_key)
                 if not existing_path.exists():
-                    to_remove.append(existing_name)
+                    to_remove.append(existing_key)
                     continue
                 try:
                     if existing_path.samefile(file_path):
                         continue
                 except (FileNotFoundError, OSError):
-                    to_remove.append(existing_name)
+                    to_remove.append(existing_key)
                     continue
 
                 try:
                     existing_size = existing_path.stat().st_size
                 except (FileNotFoundError, OSError):
-                    to_remove.append(existing_name)
+                    to_remove.append(existing_key)
                     continue
 
                 if current_size >= existing_size:
                     from common.utils import safe_unlink
                     safe_unlink(existing_path)
-                    to_remove.append(existing_name)
-                    return False
+                    to_remove.append(existing_key)
                 else:
                     from common.utils import safe_unlink
                     safe_unlink(file_path)
-                    return True
+                    is_dup = True
+                break
 
-        for name in to_remove:
-            registry.pop(name, None)
-        return False
+        for key in to_remove:
+            registry.pop(key, None)
+        return is_dup
 
     @staticmethod
     def add_to_registry(registry: dict[str, str], file_path: Path) -> None:
-        """将成功下载的图片的 pHash 加入全局注册表"""
-        if not registry:
+        """将成功下载的图片的 pHash 加入全局注册表。
+
+        注册表 key 使用完整路径字符串，避免跨目录时无法定位文件。
+        """
+        if registry is None:
             return
         if _HASH_AVAILABLE and file_path.exists():
             try:
                 img = Image.open(file_path)
                 phash = str(imagehash.phash(img))
-                registry[file_path.name] = phash
+                registry[str(file_path)] = phash
             except Exception:
                 pass
 
     def scan_existing(self, directory: Path) -> dict[str, str]:
         """扫描目录下已有图片的 pHash 指纹。
 
-        返回 {文件名: pHash字符串}
+        返回 {完整路径字符串: pHash字符串}
         """
         if not self._available:
             return {}
@@ -229,7 +252,7 @@ class ImageDedupChecker:
 
             phash = self.compute_phash(f)
             if phash:
-                result[f.name] = phash
+                result[str(f)] = phash
 
         if result:
             log(f"  已扫描 {len(result)} 个图片的 pHash 指纹")
