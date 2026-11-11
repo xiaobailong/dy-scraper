@@ -191,7 +191,7 @@ class VideoDedupChecker:
     def scan_existing(self, directory: Path) -> dict[str, list[str]]:
         """扫描目录下已有视频的 pHash 指纹（使用缓存）。
 
-        返回 {filename: [phash1, phash2, ...]}
+        返回 {完整路径字符串: [phash1, phash2, ...]}
         """
         if not self._available:
             return {}
@@ -212,12 +212,12 @@ class VideoDedupChecker:
             fname = f.name
             cache_key = f"{fname}|{f.stat().st_mtime:.6f}"
             if cache_key in cache:
-                result[fname] = cache[cache_key]
+                result[str(f)] = cache[cache_key]
                 continue
 
             fingerprint = self.compute_fingerprint(f)
             if fingerprint:
-                result[fname] = fingerprint
+                result[str(f)] = fingerprint
                 cache[cache_key] = fingerprint
                 updated = True
 
@@ -269,7 +269,7 @@ class VideoDedupChecker:
 
         current_size = file_path.stat().st_size
 
-        for existing_name, existing_fingerprint in existing_hashes.items():
+        for existing_key, existing_fingerprint in existing_hashes.items():
             if not existing_fingerprint:
                 continue
 
@@ -289,15 +289,27 @@ class VideoDedupChecker:
             ratio = match_count / denom
 
             if ratio >= min_match_ratio and match_count >= 2:
-                existing_path = file_path.parent / existing_name
-                if not existing_path.exists() or existing_path.samefile(file_path):
-                    if not existing_path.exists():
+                existing_path = Path(existing_key)
+                if not existing_path.exists():
+                    existing_hashes.pop(existing_key, None)
+                    continue
+                try:
+                    if existing_path.samefile(file_path):
                         continue
+                except (FileNotFoundError, OSError):
+                    existing_hashes.pop(existing_key, None)
+                    continue
 
-                if current_size >= existing_path.stat().st_size:
+                try:
+                    existing_size = existing_path.stat().st_size
+                except (FileNotFoundError, OSError):
+                    existing_hashes.pop(existing_key, None)
+                    continue
+
+                if current_size >= existing_size:
                     from common.utils import safe_unlink
                     safe_unlink(existing_path)
-                    existing_hashes.pop(existing_name, None)
+                    existing_hashes.pop(existing_key, None)
                     return False
                 else:
                     from common.utils import safe_unlink

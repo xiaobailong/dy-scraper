@@ -255,7 +255,7 @@ async def download_files(
                 elif file_type == "video" and final_path.exists():
                     fingerprint = video_dedup.compute_fingerprint(final_path)
                     if fingerprint:
-                        video_hash_registry[final_name] = fingerprint
+                        video_hash_registry[str(final_path)] = fingerprint
             else:
                 if final_path.exists():
                     safe_unlink(final_path)

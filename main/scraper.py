@@ -88,10 +88,12 @@ def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[st
     log(f"  已有 {len(md5_registry)} 个文件，将跳过重复下载")
 
     video_hash_registry = VideoDedupChecker().scan_existing(storage.final_video_dir)
+    video_hash_registry.update(VideoDedupChecker().scan_existing(storage.temp_video_dir))
     if video_hash_registry:
         log(f"  已扫描 {len(video_hash_registry)} 个视频的 pHash 指纹")
 
     image_hash_registry = ImageDedupChecker().scan_existing(storage.final_image_dir)
+    image_hash_registry.update(ImageDedupChecker().scan_existing(storage.temp_image_dir))
     return md5_registry, video_hash_registry, image_hash_registry
 
 
