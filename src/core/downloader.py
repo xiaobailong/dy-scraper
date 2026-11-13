@@ -129,6 +129,12 @@ async def download_files(
     image_dedup = ImageDedupChecker()
     video_dedup = VideoDedupChecker()
 
+    # 去重统计（仅用于日志汇总）
+    _label = "视频" if file_type == "video" else "图片"
+    stat = {"downloaded": 0, "md5_dup": 0, "phash_dup": 0, "small": 0, "failed": 0}
+    log(f"  [{_label}去重] pHash 可用={image_dedup.available if file_type == 'image' else video_dedup.available}, "
+        f"比对基准: 注册表 {len(image_hash_registry if file_type == 'image' else video_hash_registry)} 条 + 目录 {save_dir}")
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         tasks = []
         for i, url in enumerate(urls):
@@ -139,6 +145,7 @@ async def download_files(
             file_size = get_file_size(url)
             if file_size is not None:
                 if file_size < MIN_FILE_SIZE:
+                    stat["small"] += 1
                     log(f"  [{i + 1}/{len(urls)}] 跳过 (小于{format_bytes(MIN_FILE_SIZE)}): {url[:80]}...")
                     results.append({
                         "name": "", "url": url, "path": "", "size": format_bytes(file_size),
@@ -184,6 +191,7 @@ async def download_files(
                     continue
                 if actual_size < MIN_FILE_SIZE:
                     safe_unlink(final_path)
+                    stat["small"] += 1
                     log(f"  [{i + 1}/{len(urls)}] 删除 (实际小于{format_bytes(MIN_FILE_SIZE)}): {final_name} ({format_bytes(actual_size)})")
                     results.append({
                         "name": final_name, "url": url, "path": "", "size": format_bytes(actual_size),
@@ -193,6 +201,7 @@ async def download_files(
 
                 if md5 in md5_registry:
                     safe_unlink(final_path)
+                    stat["md5_dup"] += 1
                     log(f"  [{i + 1}/{len(urls)}] 跳过 (MD5重复): {final_name} ({info})")
                     results.append({
                         "name": final_name, "url": url, "path": "", "size": info,
@@ -207,6 +216,7 @@ async def download_files(
                     if video_dedup.check_and_dedup(final_path, video_hash_registry):
                         # 当前文件被删除（是重复且较小）
                         if not final_path.exists():
+                            stat["phash_dup"] += 1
                             log(f"  [{i + 1}/{len(urls)}] 删除 (视频pHash重复-较小): {final_name} ({info})")
                             results.append({
                                 "name": final_name, "url": url, "path": "", "size": info,
@@ -234,6 +244,7 @@ async def download_files(
                         is_dup = image_dedup.check_and_dedup(final_path, save_dir, deleted_names=dedup_deleted)
                     if is_dup:
                         if not final_path.exists():
+                            stat["phash_dup"] += 1
                             log(f"  [{i + 1}/{len(urls)}] 删除 (图片pHash重复-较小): {final_name} ({info})")
                             results.append({
                                 "name": final_name, "url": url, "path": "", "size": info,
@@ -243,6 +254,7 @@ async def download_files(
                         else:
                             log(f"  [{i + 1}/{len(urls)}] 图片pHash重复，保留当前(较大): {final_name} ({info})")
 
+                stat["downloaded"] += 1
                 log(f"  [{i + 1}/{len(urls)}] 完成: {final_name} ({info})  [来源: {actual_url}]  [页面: {page_url}]")
                 results.append({
                     "name": final_name, "url": url, "path": str(final_path),
@@ -260,10 +272,15 @@ async def download_files(
                 if final_path.exists():
                     safe_unlink(final_path)
                 log(f"  [{i + 1}/{len(urls)}] 失败: {info}")
+                stat["failed"] += 1
                 results.append({
                     "name": "", "url": url, "path": "", "size": None,
                     "md5": "", "status": "failed", "error": info
                 })
+
+    log(f"  [{_label}去重汇总] 保留 {stat['downloaded']} 个, "
+        f"MD5重复 {stat['md5_dup']} 个, pHash相似删除 {stat['phash_dup']} 个, "
+        f"过小 {stat['small']} 个, 失败 {stat['failed']} 个")
 
     return results
 

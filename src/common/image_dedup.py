@@ -41,6 +41,15 @@ _EMOJI_PATTERNS = [
 _IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'}
 
 
+def _human(size: int) -> str:
+    """字节数转可读文本（去重日志用）"""
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.2f}MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f}KB"
+    return f"{size}B"
+
+
 class ImageDedupChecker:
     """图片去重检查器。
 
@@ -106,9 +115,11 @@ class ImageDedupChecker:
 
         current_hash = self.compute_phash(file_path)
         if current_hash is None:
+            log(f"  [图片pHash] 无法计算指纹，跳过比对: {file_path.name}", "debug")
             return False
 
         current_size = file_path.stat().st_size
+        log(f"  [图片pHash] 比对 {file_path.name} ({_human(current_size)}) 与目录 {directory} 中已有图片", "debug")
 
         for existing in directory.iterdir():
             if not existing.is_file():
@@ -141,14 +152,19 @@ class ImageDedupChecker:
                     safe_unlink(existing)
                     if deleted_names is not None:
                         deleted_names.add(existing.name)
+                    log(f"  [图片pHash] 相似(距离{dist}≤{hamming_threshold})，删除较小旧图 "
+                        f"{existing.name}({_human(existing_size)})，保留 {file_path.name}({_human(current_size)})")
                     return False
                 else:
                     from common.utils import safe_unlink
                     safe_unlink(file_path)
                     if deleted_names is not None:
                         deleted_names.add(file_path.name)
+                    log(f"  [图片pHash] 相似(距离{dist}≤{hamming_threshold})，删除较小新图 "
+                        f"{file_path.name}({_human(current_size)})，保留旧图 {existing.name}({_human(existing_size)})")
                     return True
 
+        log(f"  [图片pHash] 目录内无相似图片，保留 {file_path.name}", "debug")
         return False
 
     def check_and_dedup_with_registry(
@@ -169,16 +185,20 @@ class ImageDedupChecker:
         if not self._available or not file_path.exists():
             return False
         if not registry:
+            log(f"  [图片pHash] 注册表为空（无可比对图片），跳过: {file_path.name}", "debug")
             return False
 
         current_hash = self.compute_phash(file_path)
         if current_hash is None:
+            log(f"  [图片pHash] 无法计算指纹，跳过比对: {file_path.name}", "debug")
             return False
 
         current_size = file_path.stat().st_size
+        log(f"  [图片pHash] 比对 {file_path.name} ({_human(current_size)}) 与注册表 {len(registry)} 条指纹", "debug")
 
         is_dup = False
         to_remove = []
+        matched = False
         for existing_key, existing_hash in list(registry.items()):
             try:
                 dist = int(imagehash.hex_to_hash(current_hash) -
@@ -204,15 +224,23 @@ class ImageDedupChecker:
                     to_remove.append(existing_key)
                     continue
 
+                matched = True
                 if current_size >= existing_size:
                     from common.utils import safe_unlink
                     safe_unlink(existing_path)
                     to_remove.append(existing_key)
+                    log(f"  [图片pHash] 相似(距离{dist}≤{hamming_threshold})，删除较小旧图 "
+                        f"{existing_path.name}({_human(existing_size)})，保留 {file_path.name}({_human(current_size)})")
                 else:
                     from common.utils import safe_unlink
                     safe_unlink(file_path)
                     is_dup = True
+                    log(f"  [图片pHash] 相似(距离{dist}≤{hamming_threshold})，删除较小新图 "
+                        f"{file_path.name}({_human(current_size)})，保留旧图 {existing_path.name}({_human(existing_size)})")
                 break
+
+        if not matched:
+            log(f"  [图片pHash] 注册表中无相似图片，保留 {file_path.name}", "debug")
 
         for key in to_remove:
             registry.pop(key, None)
@@ -231,6 +259,7 @@ class ImageDedupChecker:
                 img = Image.open(file_path)
                 phash = str(imagehash.phash(img))
                 registry[str(file_path)] = phash
+                log(f"  [图片pHash] 加入注册表: {file_path.name} -> {phash}（共 {len(registry)} 条）", "debug")
             except Exception:
                 pass
 
@@ -240,23 +269,26 @@ class ImageDedupChecker:
         返回 {完整路径字符串: pHash字符串}
         """
         if not self._available:
+            log(f"  [图片pHash] 跳过扫描（imagehash 不可用）: {directory}", "error")
             return {}
         if not directory.exists():
+            log(f"  [图片pHash] 目录不存在: {directory}", "debug")
             return {}
 
         result = {}
+        total = 0
         for f in directory.iterdir():
             if not f.is_file():
                 continue
             if f.suffix.lower() not in _IMAGE_EXTENSIONS:
                 continue
 
+            total += 1
             phash = self.compute_phash(f)
             if phash:
                 result[str(f)] = phash
 
-        if result:
-            log(f"  已扫描 {len(result)} 个图片的 pHash 指纹")
+        log(f"  [图片pHash] 扫描 {directory}: 图片 {total} 个, 成功取指纹 {len(result)} 个")
         return result
 
     # ── 封面图识别 ──────────────────────────────────

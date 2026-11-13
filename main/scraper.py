@@ -73,27 +73,76 @@ def _fetch_urls() -> tuple[list[str], int, str]:
     return new_urls, skipped_count, url_source
 
 
+def _unique_dirs(*dirs) -> list[Path]:
+    """去重后的目录列表（保持顺序，跳过 None/空值，Windows 路径不区分大小写）"""
+    result: list[Path] = []
+    seen: set[str] = set()
+    for d in dirs:
+        if not d:
+            continue
+        p = Path(d)
+        key = str(p).rstrip("\\/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(p)
+    return result
+
+
+def _dedup_scan_dirs(storage: FileStorageManager) -> tuple[list[Path], list[Path]]:
+    """汇总所有需要参与去重的图片/视频目录。
+
+    除 FileStorageManager 的最终目录、临时目录外，还包括数据库配置的
+    DOWNLOAD_IMAGE_DIR / DOWNLOAD_VIDEO_DIR（历史下载目录，可能不在最终目录下）。
+    """
+    import config
+
+    image_dirs = _unique_dirs(
+        storage.final_image_dir,
+        storage.temp_image_dir,
+        getattr(config, "DOWNLOAD_IMAGE_DIR", None),
+    )
+    video_dirs = _unique_dirs(
+        storage.final_video_dir,
+        storage.temp_video_dir,
+        getattr(config, "DOWNLOAD_VIDEO_DIR", None),
+    )
+    return image_dirs, video_dirs
+
+
 def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[str, list[str]], dict[str, str]]:
     """扫描已有文件 MD5、视频 pHash 和图片 pHash，返回 (md5_registry, video_hash_registry, image_hash_registry)
 
-    扫描范围包括目标目录和临时目录（临时目录可能保留上次采集未完成的有效文件）。
+    扫描范围 = 最终目录 + 临时目录（上次采集残留）+ 配置的历史下载目录，三者都会参与去重。
     """
     log("\n[0/6] 扫描已有文件 MD5，用于去重...")
-    md5_registry = (
-        scan_existing_md5s(storage.final_video_dir)
-        | scan_existing_md5s(storage.final_image_dir)
-        | scan_existing_md5s(storage.temp_video_dir)
-        | scan_existing_md5s(storage.temp_image_dir)
-    )
+    image_dirs, video_dirs = _dedup_scan_dirs(storage)
+
+    log(f"  图片扫描源({len(image_dirs)}):")
+    for d in image_dirs:
+        log(f"    - {d}")
+    log(f"  视频扫描源({len(video_dirs)}):")
+    for d in video_dirs:
+        log(f"    - {d}")
+
+    md5_registry: set[str] = set()
+    for d in video_dirs + image_dirs:
+        md5_registry |= scan_existing_md5s(d)
     log(f"  已有 {len(md5_registry)} 个文件，将跳过重复下载")
 
-    video_hash_registry = VideoDedupChecker().scan_existing(storage.final_video_dir)
-    video_hash_registry.update(VideoDedupChecker().scan_existing(storage.temp_video_dir))
-    if video_hash_registry:
-        log(f"  已扫描 {len(video_hash_registry)} 个视频的 pHash 指纹")
+    video_dedup = VideoDedupChecker()
+    video_hash_registry: dict[str, list[str]] = {}
+    for d in video_dirs:
+        video_hash_registry.update(video_dedup.scan_existing(d))
+    log(f"  视频 pHash 注册表合计 {len(video_hash_registry)} 条（{len(video_dirs)} 个目录）")
 
-    image_hash_registry = ImageDedupChecker().scan_existing(storage.final_image_dir)
-    image_hash_registry.update(ImageDedupChecker().scan_existing(storage.temp_image_dir))
+    image_dedup = ImageDedupChecker()
+    image_hash_registry: dict[str, str] = {}
+    for d in image_dirs:
+        image_hash_registry.update(image_dedup.scan_existing(d))
+    log(f"  图片 pHash 注册表合计 {len(image_hash_registry)} 条（{len(image_dirs)} 个目录）")
+    if not image_dedup.available:
+        log("  ⚠️ 图片 pHash 不可用，本次相似图片去重（保留较大/清晰）不会生效！", "error")
     return md5_registry, video_hash_registry, image_hash_registry
 
 

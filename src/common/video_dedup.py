@@ -194,8 +194,10 @@ class VideoDedupChecker:
         返回 {完整路径字符串: [phash1, phash2, ...]}
         """
         if not self._available:
+            log(f"  [视频pHash] 跳过扫描（ffmpeg/imagehash 不可用）: {directory}", "error")
             return {}
         if not directory.exists():
+            log(f"  [视频pHash] 目录不存在: {directory}", "debug")
             return {}
 
         cache_path = directory.parent / _CACHE_FILENAME
@@ -230,6 +232,7 @@ class VideoDedupChecker:
             cache = {k: v for k, v in cache.items() if k in valid_keys}
             self._save_cache(cache_path, cache)
 
+        log(f"  [视频pHash] 扫描 {directory}: 成功取指纹 {len(result)} 个")
         return result
 
     # ── 相似度去重 ──────────────────────────────────
@@ -261,13 +264,17 @@ class VideoDedupChecker:
         if not self._available:
             return False
         if not file_path.exists() or not existing_hashes:
+            log(f"  [视频pHash] 无可用比对基准，跳过: {file_path.name}", "debug")
             return False
 
         current_hash = self.compute_fingerprint(file_path)
         if current_hash is None:
+            log(f"  [视频pHash] 无法计算指纹，跳过比对: {file_path.name}", "debug")
             return False
 
         current_size = file_path.stat().st_size
+        log(f"  [视频pHash] 比对 {file_path.name} ({current_size}字节, {len(current_hash)}帧) "
+            f"与注册表 {len(existing_hashes)} 条指纹", "debug")
 
         for existing_key, existing_fingerprint in existing_hashes.items():
             if not existing_fingerprint:
@@ -310,10 +317,15 @@ class VideoDedupChecker:
                     from common.utils import safe_unlink
                     safe_unlink(existing_path)
                     existing_hashes.pop(existing_key, None)
+                    log(f"  [视频pHash] 相似(匹配率{ratio:.0%})，删除较小旧视频 "
+                        f"{existing_path.name}({existing_size}字节)，保留 {file_path.name}({current_size}字节)")
                     return False
                 else:
                     from common.utils import safe_unlink
                     safe_unlink(file_path)
+                    log(f"  [视频pHash] 相似(匹配率{ratio:.0%})，删除较小新视频 "
+                        f"{file_path.name}({current_size}字节)，保留旧视频 {existing_path.name}({existing_size}字节)")
                     return True
 
+        log(f"  [视频pHash] 注册表中无相似视频，保留 {file_path.name}", "debug")
         return False
