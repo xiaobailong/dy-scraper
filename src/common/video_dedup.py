@@ -200,7 +200,7 @@ class VideoDedupChecker:
             log(f"  [视频pHash] 目录不存在: {directory}", "debug")
             return {}
 
-        cache_path = directory.parent / _CACHE_FILENAME
+        cache_path = directory / _CACHE_FILENAME
         cache = self._load_cache(cache_path)
         updated = False
         result = {}
