@@ -58,11 +58,12 @@ class ImageDedupChecker:
         self._available = _HASH_AVAILABLE
         if not self._available and not ImageDedupChecker._availability_warned:
             ImageDedupChecker._availability_warned = True
-            log(
-                f"  ⚠️ 图片 pHash 去重不可用：缺少依赖 imagehash/Pillow（{_HASH_IMPORT_ERROR}），"
-                f"请安装：pip install imagehash pillow",
-                "warning",
-            )
+            log("=" * 62, "error")
+            log("  ⚠️ 图片 pHash 去重不可用：缺少依赖 imagehash/Pillow", "error")
+            log(f"     错误详情：{_HASH_IMPORT_ERROR}", "error")
+            log("     影响：相似图片「保留清晰度高/文件较大」的去重逻辑将被跳过，可能重复下载", "error")
+            log("     修复：pip install imagehash pillow", "error")
+            log("=" * 62, "error")
 
     @property
     def available(self) -> bool:
