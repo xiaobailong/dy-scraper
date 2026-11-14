@@ -132,8 +132,10 @@ def _scan_dedup_registry(storage: FileStorageManager) -> tuple[set[str], dict[st
 
     video_dedup = VideoDedupChecker()
     video_hash_registry: dict[str, list[str]] = {}
+    # 缓存文件统一放到 douyin 根目录，不落在各视频目录里
+    video_cache_dir = getattr(config, "DOUYIN_DIR", None)
     for d in video_dirs:
-        video_hash_registry.update(video_dedup.scan_existing(d))
+        video_hash_registry.update(video_dedup.scan_existing(d, cache_dir=video_cache_dir))
     log(f"  视频 pHash 注册表合计 {len(video_hash_registry)} 条（{len(video_dirs)} 个目录）")
 
     image_dedup = ImageDedupChecker()

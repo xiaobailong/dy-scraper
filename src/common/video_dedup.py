@@ -25,7 +25,7 @@ _FFPROBE_EXE = "ffprobe"
 _FFMPEG_AVAILABLE = False
 
 # 指纹算法版本号
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # 视频文件扩展名
 _VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.flv', '.avi', '.mkv', '.m4v', '.3gp'}
@@ -188,8 +188,12 @@ class VideoDedupChecker:
 
     # ── 扫描已有视频 ──────────────────────────────────
 
-    def scan_existing(self, directory: Path) -> dict[str, list[str]]:
+    def scan_existing(self, directory: Path, cache_dir: Path | None = None) -> dict[str, list[str]]:
         """扫描目录下已有视频的 pHash 指纹（使用缓存）。
+
+        cache_dir: 指纹缓存文件 (.video_hashes.json) 的存放目录，默认与
+            directory 相同；传入时统一存放到指定目录（如 douyin 根目录），
+            缓存 key 会带上目录前缀以区分不同扫描目录。
 
         返回 {完整路径字符串: [phash1, phash2, ...]}
         """
@@ -200,10 +204,12 @@ class VideoDedupChecker:
             log(f"  [视频pHash] 目录不存在: {directory}", "debug")
             return {}
 
-        cache_path = directory / _CACHE_FILENAME
+        cache_dir = cache_dir or directory
+        cache_path = cache_dir / _CACHE_FILENAME
         cache = self._load_cache(cache_path)
         updated = False
         result = {}
+        prefix = f"{directory}|"
 
         for f in directory.iterdir():
             if not f.is_file():
@@ -212,7 +218,7 @@ class VideoDedupChecker:
                 continue
 
             fname = f.name
-            cache_key = f"{fname}|{f.stat().st_mtime:.6f}"
+            cache_key = f"{prefix}{fname}|{f.stat().st_mtime:.6f}"
             if cache_key in cache:
                 result[str(f)] = cache[cache_key]
                 continue
@@ -225,11 +231,13 @@ class VideoDedupChecker:
 
         if updated:
             valid_keys = {"_version"} | {
-                f"{f.name}|{f.stat().st_mtime:.6f}"
+                f"{prefix}{f.name}|{f.stat().st_mtime:.6f}"
                 for f in directory.iterdir()
                 if f.is_file() and f.suffix.lower() in _VIDEO_EXTENSIONS
             }
-            cache = {k: v for k, v in cache.items() if k in valid_keys}
+            # 共享缓存文件时，保留其他目录（前缀不同）的缓存条目
+            other_keys = {k for k in cache if k != "_version" and not k.startswith(prefix)}
+            cache = {k: v for k, v in cache.items() if k in valid_keys or k in other_keys}
             self._save_cache(cache_path, cache)
 
         log(f"  [视频pHash] 扫描 {directory}: 成功取指纹 {len(result)} 个")
